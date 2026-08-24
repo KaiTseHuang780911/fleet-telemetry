@@ -1,0 +1,34 @@
+{
+  "name": "fleet-telemetry",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Fleet telemetry platform: Android driver app, Go ingestion service, React dashboard, and an LLM query layer.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "run-p dev:api dev:sim",
+    "dev:api": "go run ./api/cmd/api",
+    "dev:sim": "go run ./sim/cmd/sim",
+    "dev:web": "npm --prefix web run dev",
+
+    "build": "go build -o bin/ ./api/cmd/api ./sim/cmd/sim",
+
+    "test": "run-s test:go",
+    "test:go": "go test ./...",
+
+    "lint": "run-s lint:go fmt:check",
+    "lint:go": "go vet ./...",
+    "fmt": "gofmt -l -w .",
+    "fmt:check": "gofmt -l .",
+
+    "db:setup": "psql -U postgres -h localhost -v ON_ERROR_STOP=1 -f scripts/db-setup.sql",
+    "db:psql": "psql -U fleet -h localhost -d fleet",
+    "db:migrate": "echo \"goose wiring lands in Phase 1\" && exit 1",
+    "db:reset": "psql -U postgres -h localhost -v ON_ERROR_STOP=1 -f scripts/db-reset.sql"
+  },
+  "devDependencies": {
+    "npm-run-all": "^4.1.5"
+  }
+}

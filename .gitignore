@@ -1,0 +1,65 @@
+# --- secrets ---
+.env
+.env.local
+*.pem
+*.key
+
+# --- private planning docs ---
+# This repo is public. These name target employers and contain draft resume copy;
+# they are working notes, not part of the artifact. Kept on disk, out of git.
+PROJECT_BRIEF.md
+SESSION_PROMPTS.md
+
+# --- Go ---
+/bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+coverage.*
+
+# --- Node / JS ---
+node_modules/
+dist/
+build/
+.vite/
+*.tsbuildinfo
+npm-debug.log*
+yarn-error.log*
+.eslintcache
+
+# --- Expo / React Native (Phase 2) ---
+.expo/
+.expo-shared/
+mobile/android/
+mobile/ios/
+*.jks
+*.keystore
+!debug.keystore
+google-services.json
+*.apk
+*.aab
+
+# --- local data ---
+.data/
+*.sqlite
+*.sqlite3
+*.db
+
+# --- editors ---
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+
+# --- Windows ---
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# --- macOS (for anyone else cloning this) ---
+.DS_Store
