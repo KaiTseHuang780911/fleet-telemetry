@@ -8,7 +8,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "dev": "run-p dev:api dev:sim",
+    "dev": "npm run dev:api",
     "dev:api": "go run ./api/cmd/api",
     "dev:sim": "go run ./sim/cmd/sim",
     "dev:web": "npm --prefix web run dev",
