@@ -25,7 +25,9 @@
 
     "db:setup": "psql -U postgres -h localhost -v ON_ERROR_STOP=1 -f scripts/db-setup.sql",
     "db:psql": "psql -U fleet -h localhost -d fleet",
-    "db:migrate": "echo \"goose wiring lands in Phase 1\" && exit 1",
+    "db:migrate": "go run ./api/cmd/api migrate up",
+    "db:migrate:status": "go run ./api/cmd/api migrate status",
+    "db:migrate:down": "go run ./api/cmd/api migrate down",
     "db:reset": "psql -U postgres -h localhost -v ON_ERROR_STOP=1 -f scripts/db-reset.sql"
   },
   "devDependencies": {

@@ -9,6 +9,40 @@ Newest entries at the top.
 
 ---
 
+## 2026-08-25 — Phase 1: schema and migrations
+
+**Delegated:** Postgres schema design, index strategy, and migration tooling.
+
+**What it got right:** flagged the goose dependency problem unprompted. `go get -tool
+github.com/pressly/goose/v3/cmd/goose` pulled **60+ indirect modules** — ClickHouse, MySQL,
+MSSQL, Vertica, YDB, Turso, grpc, protobuf, OpenTelemetry — because `cmd/goose` imports
+every dialect it supports. Using goose as a *library* with only pgx registered brings it to
+**2 direct and 8 indirect**. Worth remembering as a general lesson: a tool's CLI entrypoint
+and its library have very different dependency footprints, and `go get -tool` gives you the
+CLI's.
+
+**What it got wrong:**
+- Recommended goose without checking its dependency tree first, then had to walk it back.
+  The measurement should have come before the `go get`.
+- Initially wrote the migration referencing an ADR number that did not match the plan's
+  numbering. Renumbered: 001 is schema and indexing, 002 is reconciliation, ingestion moves
+  to 003.
+
+**Corrected by hand:** chose hybrid client+server trip/stop detection over server-only,
+against the recommendation — the reconciliation delta between the two sources is the number
+that makes the battery-versus-fidelity story concrete rather than anecdotal. Schema now
+carries a `source` column and a `stop_event_matches` table.
+
+**Verified, not assumed:** BRIN index confirmed as a real `brin` access method via
+`pg_am`, not just present by name. Down-migration round-tripped to zero tables and back to
+five. Both `fleet` and `fleet_test` migrated.
+
+**Still unverified:** graceful shutdown on SIGTERM. Windows `Stop-Process -Force` does not
+deliver a signal, so the drain path has never actually run. Needs a real test in Phase 1
+once the batch writer has something to drain.
+
+---
+
 ## 2026-08-24 — Phase 0: environment and repo foundation
 
 **Delegated:** survey the machine's toolchain, plan Phase 0 + Phase 1, then set up the

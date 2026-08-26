@@ -1,18 +1,29 @@
 // Command api is the fleet telemetry ingestion and query service.
 //
-// Phase 0: liveness only. The telemetry endpoint, the database, and the batch
-// writer land in Phase 1.
+// Usage:
+//
+//	api                  serve HTTP
+//	api migrate up       apply all pending migrations
+//	api migrate down     roll back exactly one migration
+//	api migrate status   list applied and pending migrations
+//
+// Migrations live in the same binary as the server so that a deploy and its
+// schema change ship as one artifact.
 package main
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/kaitsehuang780911/fleet-telemetry/api/internal/config"
+	"github.com/kaitsehuang780911/fleet-telemetry/api/internal/db"
 )
 
 func main() {
@@ -22,9 +33,50 @@ func main() {
 		Level: slog.LevelInfo,
 	}))
 
-	if err := run(logger); err != nil {
-		logger.Error("server exited with error", "err", err)
+	// Local convenience only — real environment variables take precedence, and
+	// a missing .env is not an error.
+	if err := config.LoadDotEnv(".env"); err != nil {
+		logger.Warn("could not read .env", "err", err)
+	}
+
+	if err := dispatch(logger); err != nil {
+		logger.Error("exited with error", "err", err)
 		os.Exit(1)
+	}
+}
+
+// dispatch routes subcommands. Hand-rolled rather than using the flag package
+// or a CLI library: there are three subcommands and no flags, so anything more
+// would be ceremony.
+func dispatch(logger *slog.Logger) error {
+	if len(os.Args) < 2 {
+		return run(logger)
+	}
+
+	switch os.Args[1] {
+	case "migrate":
+		ctx := context.Background()
+		dsn := os.Getenv("DATABASE_URL")
+		if dsn == "" {
+			return errors.New("DATABASE_URL is not set")
+		}
+
+		action := "up"
+		if len(os.Args) > 2 {
+			action = os.Args[2]
+		}
+		switch action {
+		case "up":
+			return db.Migrate(ctx, dsn, logger)
+		case "down":
+			return db.MigrateDown(ctx, dsn, logger)
+		case "status":
+			return db.MigrateStatus(ctx, dsn, logger)
+		default:
+			return fmt.Errorf("unknown migrate action %q: want up, down, or status", action)
+		}
+	default:
+		return fmt.Errorf("unknown command %q: want migrate, or no argument to serve", os.Args[1])
 	}
 }
 
