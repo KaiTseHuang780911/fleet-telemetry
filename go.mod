@@ -1,4 +1,4 @@
-module github.com/kaitsehuang780911/fleet-telemetry
+module github.com/KaiTseHuang780911/fleet-telemetry
 
 go 1.26
 

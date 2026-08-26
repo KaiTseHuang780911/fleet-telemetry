@@ -15,7 +15,7 @@ import (
 	// will want. This blank import bridges the two for migrations only.
 	_ "github.com/jackc/pgx/v5/stdlib"
 
-	"github.com/kaitsehuang780911/fleet-telemetry/api/migrations"
+	"github.com/KaiTseHuang780911/fleet-telemetry/api/migrations"
 )
 
 // Migrate applies all pending migrations. It is safe to run concurrently from

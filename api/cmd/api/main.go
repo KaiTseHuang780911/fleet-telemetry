@@ -22,8 +22,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/kaitsehuang780911/fleet-telemetry/api/internal/config"
-	"github.com/kaitsehuang780911/fleet-telemetry/api/internal/db"
+	"github.com/KaiTseHuang780911/fleet-telemetry/api/internal/config"
+	"github.com/KaiTseHuang780911/fleet-telemetry/api/internal/db"
 )
 
 func main() {

@@ -7,7 +7,8 @@ natural-language query layer read it back.
 Built as one coherent system rather than four unrelated demos — the mobile app is what
 generates the data everything else consumes.
 
-> **Status:** Phase 0 — repo foundation. Nothing here works end to end yet.
+> **Status:** Phase 1 — schema and migrations are in; the ingestion endpoint is next.
+> Nothing works end to end yet.
 
 ---
 
@@ -73,7 +74,7 @@ is importable from both services — `api/internal/wire/` would have been privat
 ## Quickstart
 
 ```bash
-git clone https://github.com/kaitsehuang780911/fleet-telemetry
+git clone https://github.com/KaiTseHuang780911/fleet-telemetry
 cd fleet-telemetry
 
 cp .env.example .env      # adjust if your Postgres differs
