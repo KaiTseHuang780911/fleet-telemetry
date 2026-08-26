@@ -43,6 +43,37 @@ once the batch writer has something to drain.
 
 ---
 
+## 2026-08-26 — Repo published, two self-inflicted detours
+
+**Delegated:** correcting the Go module path, publishing the repo.
+
+**What it got wrong — encoding:** rewrote three source files with PowerShell
+`Get-Content -Raw` + `Set-Content -Encoding utf8` to change the module path casing. In
+Windows PowerShell 5.1 that round trip reads UTF-8 files as ANSI and writes them back with
+a BOM, so every em-dash in the comments became `â€"`. Caught it, restored from the last
+commit, redid the change with `sed` — which operates on bytes and leaves multi-byte UTF-8
+sequences alone. **Rule going forward: never round-trip source files through PowerShell
+5.1's Get-Content/Set-Content.**
+
+**What it got right:** noticed before publishing that the GitHub username is
+`KaiTseHuang780911`, not the all-lowercase form used in `go.mod`. GitHub URLs are
+case-insensitive but Go module paths are not — a consumer running `go get` with the
+canonical casing would hit "module declares its path as X but was required as Y".
+
+Also cleaned the module download cache after the goose detour: **603 MB → 39 MB**. The
+orphaned `modernc.org` pure-Go SQLite implementation alone was 227 MB.
+
+**Corrected by hand:** SSH. The push failed with `Permission denied (publickey)` — the key
+is passphrase-protected and an agent session has no TTY to prompt on. Enabled Windows'
+`ssh-agent` service (Automatic, so it survives reboots), pointed `core.sshCommand` at
+Windows' OpenSSH since Git Bash's bundled ssh cannot talk to the Windows service agent,
+and the passphrase was entered by hand once.
+
+**Verified, not assumed:** GitHub's host-key fingerprints were checked against the
+published values before being added to `known_hosts`, rather than accepting TOFU blindly.
+
+---
+
 ## 2026-08-24 — Phase 0: environment and repo foundation
 
 **Delegated:** survey the machine's toolchain, plan Phase 0 + Phase 1, then set up the
