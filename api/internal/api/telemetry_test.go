@@ -25,8 +25,6 @@ func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-func ptr[T any](v T) *T { return &v }
-
 type fakeStore struct {
 	vehicleID  uuid.UUID
 	vehicleErr error
@@ -423,5 +421,4 @@ func TestOptionalReadingFieldsReachTheWriter(t *testing.T) {
 	if got.HeadingDeg != nil {
 		t.Errorf("HeadingDeg = %v, want nil for an omitted field", got.HeadingDeg)
 	}
-	_ = ptr(0) // keep the helper referenced for future tests
 }

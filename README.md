@@ -1,5 +1,7 @@
 # Fleet Telemetry Platform
 
+[![CI](https://github.com/KaiTseHuang780911/fleet-telemetry/actions/workflows/ci.yml/badge.svg)](https://github.com/KaiTseHuang780911/fleet-telemetry/actions/workflows/ci.yml)
+
 An end-to-end telematics system. An Android driver app produces position and stop
 telemetry; a Go service ingests it into Postgres; a React dashboard and a
 natural-language query layer read it back.

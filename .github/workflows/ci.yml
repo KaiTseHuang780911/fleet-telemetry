@@ -1,0 +1,119 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Lets the workflow be re-run by hand after a flaky infrastructure failure,
+  # without pushing an empty commit.
+  workflow_dispatch:
+
+# A new push to the same branch makes the previous run irrelevant. Cancelling it
+# keeps the queue short and the feedback fast, which is what keeps CI green
+# rather than ignored.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Development happens on Windows, which has no cgo toolchain and no SIGTERM.
+  # Linux here is not incidental: it is the platform this service deploys to,
+  # and the only one where the race detector and the shutdown test can run.
+  GO_VERSION: "1.26"
+
+jobs:
+  build-and-test:
+    name: Build and test
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: fleet
+          POSTGRES_PASSWORD: fleet
+          POSTGRES_DB: fleet
+        ports:
+          - 5432:5432
+        # Without a health check the job races the container's startup and
+        # fails intermittently on a cold runner.
+        options: >-
+          --health-cmd "pg_isready -U fleet"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Two separate databases. `go test ./...` runs packages in parallel, and
+      # the store tests TRUNCATE on every case — pointed at one database they
+      # would delete the shutdown test's rows mid-run.
+      DATABASE_URL: postgres://fleet:fleet@localhost:5432/fleet?sslmode=disable
+      TEST_DATABASE_URL: postgres://fleet:fleet@localhost:5432/fleet_test?sslmode=disable
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          # Caches the module and build caches keyed on go.sum.
+          cache: true
+
+      - name: Create the test database
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE fleet_test OWNER fleet'
+
+      - name: Check formatting
+        run: |
+          # gofmt -l exits 0 even when it finds problems, so the file list has
+          # to be turned into a failure explicitly.
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean:"
+            echo "$unformatted"
+            gofmt -d .
+            exit 1
+          fi
+
+      - name: Verify go.mod is tidy
+        run: |
+          go mod tidy
+          if ! git diff --quiet go.mod go.sum; then
+            echo "go.mod or go.sum is not tidy; run 'go mod tidy' and commit the result:"
+            git diff go.mod go.sum
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Apply migrations
+        run: go run ./api/cmd/api migrate up
+
+      - name: Test with the race detector
+        # The race detector needs cgo, which is why this cannot run on the
+        # Windows development machine. Concurrency here is real — a bounded
+        # channel, a writer goroutine, an atomic counter set, and a mutex
+        # guarding channel close — so this is the check that matters most.
+        run: go test -race -count=1 ./...
+
+  # Kept separate so a lint failure and a test failure are distinguishable at a
+  # glance, rather than one red X meaning either.
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=5m
