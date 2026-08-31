@@ -50,7 +50,13 @@ func (s *Server) Routes() http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
+	// Deliberately NOT middleware.RealIP. It rewrites r.RemoteAddr from
+	// X-Forwarded-For / X-Real-IP whether or not the infrastructure in front of
+	// us actually sets them, so any client can forge its apparent source
+	// address (GHSA-3fxj-6jh8-hvhx). Nothing here uses the client IP, so it was
+	// pure attack surface. If rate limiting ever needs it, the header must be
+	// parsed against a known trusted-proxy list rather than believed.
+	//
 	// A panic in one handler must not take the process down and lose every
 	// batch currently buffered in the writer. CLAUDE.md forbids panics in
 	// request paths; this is the belt to that braces.

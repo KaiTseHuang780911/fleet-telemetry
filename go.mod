@@ -1,6 +1,15 @@
 module github.com/KaiTseHuang780911/fleet-telemetry
 
-go 1.26
+// Set by `go mod tidy`, not by hand: goose v3.27.3 requires 1.25.7, and the go
+// directive must be at least the highest any dependency demands. Our own code
+// needs far less — the newest feature used is net/http ServeMux method patterns
+// (1.22).
+//
+// Worth knowing: this line is also the version any static-analysis tool must
+// have been *built* with in order to analyse the module at all. That is why CI
+// compiles staticcheck with the repo's own toolchain rather than downloading a
+// prebuilt binary.
+go 1.25.7
 
 // One module for the whole repo. `api/` and `sim/` share the telemetry wire
 // format, which lives in `internal/wire/`. Go scopes an `internal/` package to
