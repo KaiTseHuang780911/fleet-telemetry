@@ -19,19 +19,25 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
-	"github.com/KaiTseHuang780911/fleet-telemetry/api/internal/config"
+	"github.com/KaiTseHuang780911/fleet-telemetry/api/internal/api"
 	"github.com/KaiTseHuang780911/fleet-telemetry/api/internal/db"
+	"github.com/KaiTseHuang780911/fleet-telemetry/api/internal/ingest"
+	"github.com/KaiTseHuang780911/fleet-telemetry/api/internal/store"
+	"github.com/KaiTseHuang780911/fleet-telemetry/internal/config"
 )
 
 func main() {
 	// slog is the standard library's structured logger (Go 1.21+). No logging
 	// dependency is needed — this is deliberate, see CLAUDE.md.
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
-	}))
+	level := slog.LevelInfo
+	if os.Getenv("LOG_LEVEL") == "debug" {
+		level = slog.LevelDebug
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
 
 	// Local convenience only — real environment variables take precedence, and
 	// a missing .env is not an error.
@@ -85,28 +91,34 @@ func dispatch(logger *slog.Logger) error {
 // body testable and guarantees deferred cleanup actually runs — os.Exit skips
 // deferred functions entirely.
 func run(logger *slog.Logger) error {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		return errors.New("DATABASE_URL is not set")
+	}
+
+	st, err := store.New(context.Background(), dsn)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	writer := ingest.New(st, ingest.Config{
+		BufferSize:    envInt("INGEST_BUFFER_SIZE", 1024),
+		BatchSize:     envInt("INGEST_BATCH_SIZE", 500),
+		FlushInterval: envDuration("INGEST_FLUSH_MS", 250*time.Millisecond),
+		FlushTimeout:  envDuration("INGEST_FLUSH_TIMEOUT_MS", 10*time.Second),
+	}, logger)
+
+	// The writer's own context is independent of any request context, so that
+	// cancelling in-flight requests never interrupts a flush mid-write.
+	writerCtx, stopWriter := context.WithCancel(context.Background())
+	defer stopWriter()
+	go writer.Run(writerCtx)
+
 	addr := ":" + envOr("PORT", "8080")
-
-	mux := http.NewServeMux()
-
-	// Go 1.22+ ServeMux understands method patterns like "GET /healthz", so
-	// routing by method no longer needs a third-party router. chi arrives in
-	// Phase 1, when routes gain path parameters such as
-	// /v1/vehicles/{id}/trips.
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		// Liveness only: is the process up and serving? It deliberately does
-		// not touch the database. A readiness probe that checks dependencies
-		// is /readyz, and it arrives with pgx in Phase 1 — conflating the two
-		// makes a slow database look like a dead process and triggers
-		// pointless restarts.
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
-	})
-
 	srv := &http.Server{
 		Addr:    addr,
-		Handler: mux,
+		Handler: api.NewServer(st, writer, logger).Routes(),
 		// Without these, a slow or hostile client can hold a connection open
 		// indefinitely. net/http has no default timeouts, which is the single
 		// most common way a Go service falls over in production.
@@ -143,17 +155,21 @@ func run(logger *slog.Logger) error {
 		logger.Info("shutdown signal received, draining")
 	}
 
-	// Give in-flight requests a bounded window to finish. In Phase 1 this same
-	// deadline covers draining the ingest batch writer, which is why it is
-	// configurable rather than hard-coded.
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), envDuration("SHUTDOWN_TIMEOUT_MS", 10*time.Second))
+	shutdownCtx, cancel := context.WithTimeout(context.Background(),
+		envDuration("SHUTDOWN_TIMEOUT_MS", 10*time.Second))
 	defer cancel()
 
+	// Order matters. Stop accepting HTTP first so nothing new enters the
+	// buffer, then drain what is already in it. Draining first would race
+	// against requests still arriving.
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		return err
+		logger.Error("http shutdown", "err", err)
+	}
+	if err := writer.Shutdown(shutdownCtx); err != nil {
+		logger.Error("ingest drain did not finish", "err", err)
 	}
 
-	logger.Info("shutdown complete")
+	logger.Info("shutdown complete", "ingest", writer.Stats())
 	return nil
 }
 
@@ -164,14 +180,29 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
+func envInt(key string, fallback int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return fallback
+	}
+	return n
+}
+
+// envDuration reads a value expressed in milliseconds. The _MS suffix on the
+// variable names is the contract; storing a bare number keeps the .env readable
+// without teaching every consumer Go's duration syntax.
 func envDuration(key string, fallback time.Duration) time.Duration {
 	v := os.Getenv(key)
 	if v == "" {
 		return fallback
 	}
-	ms, err := time.ParseDuration(v + "ms")
-	if err != nil {
+	ms, err := strconv.Atoi(v)
+	if err != nil || ms <= 0 {
 		return fallback
 	}
-	return ms
+	return time.Duration(ms) * time.Millisecond
 }

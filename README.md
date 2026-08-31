@@ -7,8 +7,9 @@ natural-language query layer read it back.
 Built as one coherent system rather than four unrelated demos — the mobile app is what
 generates the data everything else consumes.
 
-> **Status:** Phase 1 — schema and migrations are in; the ingestion endpoint is next.
-> Nothing works end to end yet.
+> **Status:** Phase 1. Ingestion works end to end — the simulator posts telemetry, the
+> API buffers and batch-writes it to Postgres, and replayed batches are absorbed without
+> duplicates. Trip and stop derivation are next. Phases 2–5 are not started.
 
 ---
 
@@ -85,11 +86,28 @@ npm run db:migrate        # Phase 1
 npm run dev               # API + simulator
 ```
 
+## API
+
+| Endpoint | |
+|---|---|
+| `POST /v1/telemetry` | Batch of readings. Returns `202` with `{accepted, rejected}`; `503` with `Retry-After` when shedding load |
+| `GET /v1/vehicles` | All known vehicles |
+| `GET /v1/vehicles/{id}/trips` | Trips overlapping `?from=`/`?to=` (RFC 3339, default last 24h) |
+| `GET /healthz` | Liveness — never touches the database |
+| `GET /readyz` | Readiness — pings the database, reports ingest counters |
+
+Ingestion is idempotent: readings carry a client-generated UUIDv7 primary key, so a
+device that retries after a timeout costs a conflict check rather than a duplicate row.
+A batch containing one malformed reading has that reading returned in `rejected` while
+the rest are accepted — failing the whole batch would make it a poison message that
+blocks the device's queue forever. See [ADR-003](docs/adr/003-ingestion-pipeline-and-backpressure.md).
+
 | Command | Does |
 |---|---|
 | `npm run dev` | API and simulator together |
 | `npm run dev:api` / `dev:sim` / `dev:web` | one at a time |
-| `npm test` | Go tests |
+| `npm test` | Go tests. Store integration tests skip unless `TEST_DATABASE_URL` is set |
+| `npm run test:integration` | Store tests against a real Postgres |
 | `npm run lint` | `go vet` plus a gofmt check |
 | `npm run db:setup` | create role and databases (idempotent) |
 | `npm run db:reset` | drop and recreate both databases — destructive |

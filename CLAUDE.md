@@ -94,8 +94,21 @@ Worth knowing before suggesting commands — this machine is not a typical Unix 
 ## Current phase
 
 <!-- Update this each session. -->
-**Phase 0 — repo foundation.** Monorepo skeleton, README, task runner, and database setup
-scripts are in place. Go 1.26 and PostgreSQL 17 are installed locally.
+**Phase 1 — ingestion works end to end.** Schema and migrations, `POST /v1/telemetry` with
+a bounded channel and batch writer, shed-load backpressure, and a deterministic simulator.
+ADR-001 (schema and indexing), ADR-002 (hybrid reconciliation), ADR-003 (ingestion) are
+written.
 
-Next: Phase 1 — Postgres schema and migrations, then `POST /v1/telemetry` with the buffered
-channel and batch writer, then the simulator. ADR-001 covers the ingestion design.
+Verified under load: with a one-slot buffer and 40 concurrent vehicles, 258 readings were
+shed with `503`, the simulator backed off and retried, and zero duplicate rows resulted.
+
+**Next, still in Phase 1:** server-side trip and stop derivation, plus the reconciliation
+pass that matches device-reported events against derived ones — the unbuilt half of ADR-002.
+Then GitHub Actions CI.
+
+**Known gaps, deliberately not hidden:**
+- Graceful shutdown is unit-tested at the writer level, but the SIGTERM path itself has
+  never run — Windows force-kill does not deliver a signal. Needs verifying on Linux CI.
+- `-race` cannot run locally (no cgo toolchain); CI must run it.
+- Device auto-registration on first sight is a development convenience and would be
+  replaced by device authentication in a real deployment.

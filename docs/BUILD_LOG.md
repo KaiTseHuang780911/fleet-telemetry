@@ -9,6 +9,61 @@ Newest entries at the top.
 
 ---
 
+## 2026-08-31 — Phase 1: ingestion pipeline, simulator, tests
+
+**Delegated:** the whole ingestion path — wire types, handler, batch writer, store, and a
+deterministic simulator.
+
+**What it got wrong — and this one is embarrassing:** put the `.env` loader in
+`api/internal/config`, then imported it from `sim/`. That is the *exact* Go `internal/`
+scoping rule documented in the README two sessions earlier, violated while the explanation
+was still sitting in the same repo. Build failed with "use of internal package not
+allowed". Moved to root-level `internal/config`, matching `internal/wire`.
+
+**What it got wrong — a bad test:** the first end-to-end backpressure test showed zero
+503s and was nearly reported as "shedding verified". It was not. With `INGEST_BATCH_SIZE`
+set to 10000 and a 60s flush interval, the writer never flushed, so it drained the channel
+into memory faster than a single-threaded client could fill it — the buffer never filled,
+so shedding never engaged. The config made the test meaningless rather than the code
+wrong. Re-run with 40 concurrent vehicles and a one-slot buffer, shedding engaged properly:
+258 readings shed, simulator backed off, **zero duplicates**.
+
+Lesson worth keeping: a green result from a test that cannot fail is worse than a red one.
+
+**What it got wrong — test setup:** the first integration-test helper opened a fresh
+ten-connection pool inside *every* test. Eight tests tearing down and rebuilding pools back
+to back raced the connect timeout once `go test ./...` ran packages in parallel, and one
+test failed with "context deadline exceeded". The instinct to call that a flake and re-run
+would have been wrong: it was a real defect in the harness. Moved to a single pool opened
+in `TestMain` — correct, and the package went from 13.4s to 2.8s.
+
+**What it got right:** flagged before writing that failing a whole batch on one malformed
+reading creates a poison message — the client's durable queue would retry it forever and
+never drain again. Partial acceptance was chosen because of that, and it is now the
+behaviour a test asserts.
+
+Also chose `unnest($1::uuid[], ...)` over a `VALUES` list for the insert. Postgres caps a
+statement at 65535 parameters, so `VALUES` would have limited a flush to ~5900 rows and
+produced a differently shaped query per batch length. Proven with an 8000-row test.
+
+**Corrected by hand:** chose hybrid client+server detection in the previous session against
+the recommendation; that decision shaped the `source` column and `stop_event_matches` table
+this schema now carries.
+
+**Verified, not assumed:**
+- Idempotency under real retry pressure — 3088 rows, 0 duplicate `reading_id`s, after
+  hundreds of shed-and-retry cycles.
+- NULL versus 0 survives the round trip: an omitted `speed_mps` is NULL, an explicit 0 is 0.
+- 8 store integration tests against real Postgres; they skip cleanly without
+  `TEST_DATABASE_URL` so the suite stays green on a machine with no database.
+
+**Still unverified:** the SIGTERM path. The writer's drain is now unit-tested
+(`TestShutdownDrainsBufferedReadings`), but signal delivery itself has never run — Windows
+force-kill sends no signal. `-race` also cannot run locally without a cgo toolchain. Both
+need Linux CI, which is the next task.
+
+---
+
 ## 2026-08-25 — Phase 1: schema and migrations
 
 **Delegated:** Postgres schema design, index strategy, and migration tooling.

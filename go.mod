@@ -10,6 +10,8 @@ go 1.26
 // to share the same types.
 
 require (
+	github.com/go-chi/chi/v5 v5.3.2
+	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/pressly/goose/v3 v3.27.3
 )
