@@ -9,6 +9,46 @@ Newest entries at the top.
 
 ---
 
+## 2026-08-31 (later) — CI, and the two gaps it closed
+
+**Delegated:** a GitHub Actions workflow to verify what a Windows machine cannot.
+
+**Why it exists:** `-race` needs cgo, and Windows has no SIGTERM. Both were listed as
+unverified for two sessions. Linux CI is not a workaround — it is the platform this
+service actually deploys to, so it is the correct place to prove them.
+
+**Result:** `api/cmd/api` passes in 2.8s under `-race` on Linux. The shutdown test starts
+the built binary with flush thresholds high enough that nothing can flush on its own,
+posts readings, asserts they are *still only in memory*, sends the signal, then checks
+they reached Postgres. That middle assertion is what stops the test passing for the wrong
+reason.
+
+**What it got wrong — chasing a prebuilt linter:** golangci-lint failed with "the Go
+language version (go1.24) used to build golangci-lint is lower than the targeted Go
+version (1.26)". First reaction was to lower the `go` directive to 1.24; `go mod tidy`
+immediately overrode that to 1.25.7, because **goose v3.27.3 requires 1.25.7** and the
+directive must satisfy the highest any dependency demands. So the directive was never
+mine to choose, and bumping the action version would only have deferred the same failure
+to the next dependency bump.
+
+The general rule worth keeping: **a Go analysis tool refuses to run against a module whose
+`go` directive is newer than the Go the tool was built with.** Any prebuilt analyser is
+therefore fragile against dependency bumps. Compiling staticcheck from source with the
+repo's own toolchain (`go run honnef.co/go/tools/cmd/staticcheck@latest`) makes the
+analyser always at least as new as what it analyses, and does not touch go.mod.
+
+**What that immediately caught — a real security issue, mine:** chi's `middleware.RealIP`
+was added reflexively in the router. It is deprecated and vulnerable to IP spoofing
+(GHSA-3fxj-6jh8-hvhx): it rewrites `RemoteAddr` from `X-Forwarded-For` whether or not
+anything upstream sets that header, so any client can forge its apparent source address.
+Nothing in this service reads the client IP, so it was pure attack surface for zero
+benefit. Removed, with a note on what reintroducing it safely would require.
+
+Worth sitting with: that shipped through a review, a full test suite, and `go vet` without
+being noticed. It took a tool whose whole job is knowing the ecosystem's deprecations.
+
+---
+
 ## 2026-08-31 — Phase 1: ingestion pipeline, simulator, tests
 
 **Delegated:** the whole ingestion path — wire types, handler, batch writer, store, and a

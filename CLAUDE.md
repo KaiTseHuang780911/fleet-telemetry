@@ -106,9 +106,20 @@ shed with `503`, the simulator backed off and retried, and zero duplicate rows r
 pass that matches device-reported events against derived ones — the unbuilt half of ADR-002.
 Then GitHub Actions CI.
 
-**Known gaps, deliberately not hidden:**
-- Graceful shutdown is unit-tested at the writer level, but the SIGTERM path itself has
-  never run — Windows force-kill does not deliver a signal. Needs verifying on Linux CI.
-- `-race` cannot run locally (no cgo toolchain); CI must run it.
+**CI is green** on GitHub Actions (Linux, `postgres:17` service). It runs gofmt, `go mod
+tidy` verification, vet, staticcheck, and `go test -race ./...` including the store
+integration tests and a real SIGTERM shutdown test. Two gaps that could not be checked on
+this Windows machine are now closed there:
+- Graceful shutdown on SIGTERM — verified end to end, not just at the writer level.
+- The race detector — needs cgo, which this machine lacks.
+
+Both tests skip with an explicit reason on Windows rather than passing silently. Do not
+"fix" that by deleting the skip.
+
+**Remaining known gaps, deliberately not hidden:**
+- Server-side trip/stop derivation and the reconciliation pass are unbuilt — the schema
+  carries `source` and `stop_event_matches`, but nothing populates the derived side.
 - Device auto-registration on first sight is a development convenience and would be
   replaced by device authentication in a real deployment.
+- A crash between `202` and the flush loses buffered readings. Bounded and deliberate
+  (the device resends what it was never told was durable), but real — see ADR-003.
