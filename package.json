@@ -26,6 +26,8 @@
 
     "db:setup": "psql -U postgres -h localhost -v ON_ERROR_STOP=1 -f scripts/db-setup.sql",
     "db:psql": "psql -U fleet -h localhost -d fleet",
+    "derive": "go run ./api/cmd/api derive",
+
     "db:migrate": "go run ./api/cmd/api migrate up",
     "db:migrate:status": "go run ./api/cmd/api migrate status",
     "db:migrate:down": "go run ./api/cmd/api migrate down",

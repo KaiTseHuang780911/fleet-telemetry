@@ -40,6 +40,11 @@ const (
 	MotionUnknown = "unknown"
 )
 
+// MaxStopEventsPerBatch bounds the stop events in one request. Far smaller than
+// the reading limit because stops are rare by nature — a device reporting
+// hundreds in one batch is malfunctioning, not busy.
+const MaxStopEventsPerBatch = 200
+
 // Batch is one upload from a device.
 type Batch struct {
 	// DeviceID maps to vehicles.external_id. The client never sees or supplies
@@ -52,6 +57,66 @@ type Batch struct {
 	SentAt time.Time `json:"sent_at"`
 
 	Readings []Reading `json:"readings"`
+
+	// StopEvents the device detected for itself. Optional: a batch may carry
+	// only positions.
+	//
+	// These ride along with the telemetry rather than going to a separate
+	// endpoint. A battery-constrained device should not spend a second round
+	// trip and a second radio wake-up on data it already has in hand, and one
+	// request means one idempotency story rather than two.
+	//
+	// The server derives its own stop events independently and stores both.
+	// Neither overwrites the other — see ADR-002.
+	StopEvents []StopEvent `json:"stop_events,omitempty"`
+}
+
+// StopEvent is a stop the device detected on its own, using sensor context the
+// server never sees.
+type StopEvent struct {
+	// EventID is client-generated, same UUIDv7 reasoning as ReadingID: it makes
+	// replay a no-op.
+	EventID uuid.UUID `json:"event_id"`
+
+	ArrivedAt time.Time `json:"arrived_at"`
+
+	// Nil while the vehicle is still stopped. A device reports arrival
+	// immediately and departure later, so an open stop is normal rather than
+	// an error.
+	DepartedAt *time.Time `json:"departed_at,omitempty"`
+
+	Lat float64 `json:"lat"`
+	Lon float64 `json:"lon"`
+}
+
+// Validate reports why a stop event is unacceptable, or nil if it is fine.
+// Mirrors the CHECK constraints on stop_events for the same reason
+// Reading.Validate does — a bad row would abort the whole insert.
+func (s StopEvent) Validate(now time.Time) error {
+	if s.EventID == uuid.Nil {
+		return fmt.Errorf("event_id is required")
+	}
+	if s.ArrivedAt.IsZero() {
+		return fmt.Errorf("arrived_at is required")
+	}
+	if s.ArrivedAt.After(now.Add(MaxClockSkewAhead)) {
+		return fmt.Errorf("arrived_at is more than %s in the future", MaxClockSkewAhead)
+	}
+	if s.DepartedAt != nil {
+		if s.DepartedAt.Before(s.ArrivedAt) {
+			return fmt.Errorf("departed_at is before arrived_at")
+		}
+		if s.DepartedAt.After(now.Add(MaxClockSkewAhead)) {
+			return fmt.Errorf("departed_at is more than %s in the future", MaxClockSkewAhead)
+		}
+	}
+	if s.Lat < -90 || s.Lat > 90 || isNotFinite(s.Lat) {
+		return fmt.Errorf("lat %v out of range [-90, 90]", s.Lat)
+	}
+	if s.Lon < -180 || s.Lon > 180 || isNotFinite(s.Lon) {
+		return fmt.Errorf("lon %v out of range [-180, 180]", s.Lon)
+	}
+	return nil
 }
 
 // Reading is a single position sample.
@@ -79,14 +144,14 @@ type Reading struct {
 	MotionState *string  `json:"motion_state,omitempty"`
 }
 
-// Rejection names one reading the server refused, and why.
-//
-// ReadingID is a string rather than a uuid.UUID because a reading can be
-// rejected precisely *for* having an unparseable or zero id, and the client
-// still needs to be told which entry in its queue to discard.
+// Rejection names one item the server refused, and why.
 type Rejection struct {
-	ReadingID string `json:"reading_id"`
-	Reason    string `json:"reason"`
+	// ID is the reading_id or event_id the server refused. A string rather than
+	// a uuid.UUID because an item can be rejected precisely for having an
+	// unparseable or zero id, and the client still needs to know which entry in
+	// its queue to discard.
+	ID     string `json:"id"`
+	Reason string `json:"reason"`
 }
 
 // IngestResponse is returned for an accepted batch.
@@ -97,8 +162,11 @@ type Rejection struct {
 // offline sync for that device. Instead the valid readings are taken and the
 // bad ones are named, so the client can drop exactly those and make progress.
 type IngestResponse struct {
-	Accepted int         `json:"accepted"`
-	Rejected []Rejection `json:"rejected,omitempty"`
+	Accepted      int `json:"accepted"`
+	AcceptedStops int `json:"accepted_stops"`
+
+	Rejected      []Rejection `json:"rejected,omitempty"`
+	RejectedStops []Rejection `json:"rejected_stops,omitempty"`
 }
 
 // Validate reports why a reading is unacceptable, or nil if it is fine.
@@ -157,11 +225,16 @@ func (b Batch) Validate() error {
 	if b.DeviceID == "" {
 		return fmt.Errorf("device_id is required")
 	}
-	if len(b.Readings) == 0 {
-		return fmt.Errorf("readings must not be empty")
+	// A batch must carry something. Either alone is fine: a device with nothing
+	// but a departure to report should not have to invent a position.
+	if len(b.Readings) == 0 && len(b.StopEvents) == 0 {
+		return fmt.Errorf("batch must contain readings or stop_events")
 	}
 	if len(b.Readings) > MaxReadingsPerBatch {
 		return fmt.Errorf("batch has %d readings, limit is %d", len(b.Readings), MaxReadingsPerBatch)
+	}
+	if len(b.StopEvents) > MaxStopEventsPerBatch {
+		return fmt.Errorf("batch has %d stop_events, limit is %d", len(b.StopEvents), MaxStopEventsPerBatch)
 	}
 	return nil
 }

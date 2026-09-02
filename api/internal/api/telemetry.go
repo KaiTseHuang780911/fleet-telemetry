@@ -1,10 +1,13 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/KaiTseHuang780911/fleet-telemetry/api/internal/store"
 	"github.com/KaiTseHuang780911/fleet-telemetry/internal/wire"
@@ -75,8 +78,8 @@ func (s *Server) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 	for _, rd := range batch.Readings {
 		if err := rd.Validate(receivedAt); err != nil {
 			rejected = append(rejected, wire.Rejection{
-				ReadingID: rd.ReadingID.String(),
-				Reason:    err.Error(),
+				ID:     rd.ReadingID.String(),
+				Reason: err.Error(),
 			})
 			continue
 		}
@@ -98,15 +101,92 @@ func (s *Server) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 	if len(positions) > 0 && !s.writer.Enqueue(positions) {
 		// Shed load. Nothing is dropped — the device still holds these readings
 		// and will resend. See ADR-003 for why this beats blocking or dropping.
+		//
+		// Deliberately before the stop-event write: if the readings could not
+		// be taken, the client resends the whole batch, and doing the stop
+		// write first would leave it done twice. It is idempotent, so that
+		// would be harmless — but skipping it is both cheaper and easier to
+		// reason about.
 		w.Header().Set("Retry-After", retryAfterSeconds)
 		writeError(w, http.StatusServiceUnavailable, "ingest buffer full, retry shortly")
 		return
 	}
 
+	acceptedStops, rejectedStops := s.storeStopEvents(ctx, w, batch, vehicleID, receivedAt)
+	if acceptedStops < 0 {
+		return // storeStopEvents already wrote the error response
+	}
+
 	// 202, not 200: the readings are queued, not yet durably written. Claiming
 	// otherwise would be a lie the client acts on by deleting its only copy.
 	writeJSON(w, http.StatusAccepted, wire.IngestResponse{
-		Accepted: len(positions),
-		Rejected: rejected,
+		Accepted:      len(positions),
+		AcceptedStops: acceptedStops,
+		Rejected:      rejected,
+		RejectedStops: rejectedStops,
 	})
+}
+
+// storeStopEvents validates and writes the device-reported stops in a batch.
+//
+// These are written synchronously rather than going through the ingest buffer.
+// Stops are orders of magnitude rarer than positions — a vehicle makes tens a
+// day, not thousands an hour — so they do not need batching, and writing them
+// inline means a 202 genuinely does mean "stored" for this half of the payload.
+//
+// Returns -1 if it has already written an error response.
+func (s *Server) storeStopEvents(
+	ctx context.Context,
+	w http.ResponseWriter,
+	batch wire.Batch,
+	vehicleID uuid.UUID,
+	receivedAt time.Time,
+) (int, []wire.Rejection) {
+	if len(batch.StopEvents) == 0 {
+		return 0, nil
+	}
+
+	events := make([]store.StopEvent, 0, len(batch.StopEvents))
+	var rejected []wire.Rejection
+
+	for _, se := range batch.StopEvents {
+		if err := se.Validate(receivedAt); err != nil {
+			rejected = append(rejected, wire.Rejection{
+				ID:     se.EventID.String(),
+				Reason: err.Error(),
+			})
+			continue
+		}
+		events = append(events, store.StopEvent{
+			ID:         se.EventID,
+			VehicleID:  vehicleID,
+			Source:     store.SourceClient,
+			ArrivedAt:  se.ArrivedAt.UTC(),
+			DepartedAt: se.DepartedAt,
+			Lat:        se.Lat,
+			Lon:        se.Lon,
+		})
+	}
+
+	if len(events) == 0 {
+		return 0, rejected
+	}
+
+	inserted, err := s.store.InsertClientStopEvents(ctx, events)
+	if err != nil {
+		s.logger.Error("store client stop events", "device_id", batch.DeviceID, "err", err)
+		writeError(w, http.StatusInternalServerError, "could not store stop events")
+		return -1, nil
+	}
+
+	// inserted counts genuinely new rows, so a replayed batch reports fewer
+	// than were offered. The client is told how many it sent that were valid,
+	// because "you already sent me that" is not something it needs to act on —
+	// but the gap is worth seeing when diagnosing a device that retries too
+	// eagerly.
+	if dupes := len(events) - inserted; dupes > 0 {
+		s.logger.Debug("client stop events already present",
+			"device_id", batch.DeviceID, "duplicates", dupes)
+	}
+	return len(events), rejected
 }

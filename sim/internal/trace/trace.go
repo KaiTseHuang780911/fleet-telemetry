@@ -23,23 +23,47 @@ import (
 
 const earthRadiusM = 6_371_000
 
-// Movement parameters. Held as constants rather than configuration because
-// they describe "what a delivery van does", not something an operator tunes.
+// Movement parameters.
+//
+// All of these are expressed in real units — metres per second, seconds — and
+// converted using the tick duration, never in "ticks".
+//
+// That distinction is load-bearing. An earlier version defined dwell as "30 to
+// 150 ticks", which meant the tick rate silently changed how the vehicle
+// behaved: running the simulator faster produced stops too short for a device
+// to report, and the generated data quietly stopped exercising the code it was
+// meant to. A fixture whose semantics depend on how fast you run it is not a
+// fixture.
 const (
 	cruiseSpeedMPS = 11.0 // ~40 km/h, plausible for urban driving
 	speedJitterMPS = 3.0
 
-	// Probability per tick of transitioning between moving and stopped. Tuned
-	// so a vehicle stops every few minutes and dwells for a minute or two,
-	// which is what generates useful stop_events downstream.
-	chanceToStop  = 0.02
-	chanceToStart = 0.10
+	// Expected stops per hour of driving. Converted to a per-tick probability
+	// using dt, so the rate holds at any tick duration.
+	stopsPerHour = 15.0
 
-	// A turn is applied every tick, but small — roads are mostly straight, and
-	// a pure random walk looks nothing like driving.
-	headingDriftDeg = 8.0
+	// Dwell bounds. Chosen to straddle typical detection thresholds so the data
+	// exercises both sides: some stops are long enough for every detector to
+	// agree, others sit in the range where client and server disagree — which
+	// is what the reconciliation pass is there to measure.
+	minDwell = 50 * time.Second
+	maxDwell = 240 * time.Second
 
-	batteryDrainPerTick = 0.004
+	// Heading drift per second, scaled by dt. Roads bend; they do not teleport.
+	headingDriftDegPerSec = 4.0
+
+	batteryDrainPctPerSec = 0.004
+
+	// How long a vehicle must be stationary before the device reports a stop
+	// for itself.
+	//
+	// Deliberately shorter than the server's derivation threshold. A real
+	// device has accelerometer and activity-recognition data and can call a
+	// stop sooner and more confidently than a server squinting at GPS points,
+	// so the two disagree — and that disagreement is precisely what the
+	// reconciliation pass measures. Matching them would make the metric
+	// meaningless by construction.
+	clientMinStopDuration = 45 * time.Second
 )
 
 // Point is a WGS84 coordinate.
@@ -66,9 +90,14 @@ type Vehicle struct {
 	speedMPS   float64
 	battery    float64
 	stopped    bool
-	// stoppedTicks lets a dwell last a realistic while rather than ending on
-	// the next coin flip.
-	stoppedTicks int
+	// dwellRemaining counts down in real time, not ticks.
+	dwellRemaining time.Duration
+
+	// On-device stop detection state.
+	stopStartedAt time.Time
+	stopLat       float64
+	stopLon       float64
+	pendingStops  []wire.StopEvent
 }
 
 // Fleet is a deterministic set of vehicles.
@@ -119,7 +148,9 @@ func (f *Fleet) Vehicles() []*Vehicle { return f.vehicles }
 
 // Tick advances the vehicle by dt and returns the reading it would report.
 func (v *Vehicle) Tick(now time.Time, dt time.Duration) wire.Reading {
+	wasStopped := v.stopped
 	v.advance(dt)
+	v.trackStop(now, wasStopped)
 
 	// UUIDv7 is time-ordered, which is what keeps primary-key inserts at the
 	// right edge of the B-tree server-side. Falling back to v4 rather than
@@ -153,33 +184,82 @@ func (v *Vehicle) Tick(now time.Time, dt time.Duration) wire.Reading {
 	}
 }
 
+// trackStop maintains the device's own view of when it started and finished
+// being stationary, independent of anything the server later derives.
+func (v *Vehicle) trackStop(now time.Time, wasStopped bool) {
+	switch {
+	case !wasStopped && v.stopped:
+		// Just came to rest. The device knows immediately; it does not wait to
+		// see whether the stop lasts.
+		v.stopStartedAt = now
+		v.stopLat, v.stopLon = v.pos.Lat, v.pos.Lon
+
+	case wasStopped && !v.stopped:
+		// Moved off. Report the stop only if it lasted long enough to be worth
+		// reporting — otherwise every traffic light becomes a delivery.
+		if !v.stopStartedAt.IsZero() && now.Sub(v.stopStartedAt) >= clientMinStopDuration {
+			id, err := uuid.NewV7()
+			if err != nil {
+				id = uuid.New()
+			}
+			departed := now
+			v.pendingStops = append(v.pendingStops, wire.StopEvent{
+				EventID:    id,
+				ArrivedAt:  v.stopStartedAt,
+				DepartedAt: &departed,
+				Lat:        v.stopLat,
+				Lon:        v.stopLon,
+			})
+		}
+		v.stopStartedAt = time.Time{}
+	}
+}
+
+// TakeStopEvents returns the stop events completed since the last call and
+// clears them.
+//
+// Take rather than peek: the caller queues them for upload and owns them from
+// that point, so leaving a copy behind would risk reporting the same stop
+// twice under a different event id — which the server could not deduplicate,
+// because idempotency keys off the id.
+func (v *Vehicle) TakeStopEvents() []wire.StopEvent {
+	if len(v.pendingStops) == 0 {
+		return nil
+	}
+	out := v.pendingStops
+	v.pendingStops = nil
+	return out
+}
+
 func (v *Vehicle) advance(dt time.Duration) {
+	secs := dt.Seconds()
+
 	if v.stopped {
-		v.stoppedTicks--
 		v.speedMPS = 0
-		if v.stoppedTicks <= 0 && v.rng.Float64() < chanceToStart {
+		v.dwellRemaining -= dt
+		if v.dwellRemaining <= 0 {
 			v.stopped = false
 			v.speedMPS = cruiseSpeedMPS
 		}
 	} else {
-		if v.rng.Float64() < chanceToStop {
+		// Probability of stopping during this tick, derived from the hourly
+		// rate so it is independent of tick duration.
+		if v.rng.Float64() < stopsPerHour/3600.0*secs {
 			v.stopped = true
-			// 30 to 150 ticks of dwell.
-			v.stoppedTicks = 30 + v.rng.Intn(120)
+			v.dwellRemaining = minDwell + time.Duration(v.rng.Float64()*float64(maxDwell-minDwell))
 			v.speedMPS = 0
 		} else {
-			// Heading drifts a little each tick; roads bend, they do not
-			// teleport.
-			v.headingDeg = math.Mod(v.headingDeg+(v.rng.Float64()*2-1)*headingDriftDeg+360, 360)
+			v.headingDeg = math.Mod(
+				v.headingDeg+(v.rng.Float64()*2-1)*headingDriftDegPerSec*secs+360, 360)
 			v.speedMPS = cruiseSpeedMPS + (v.rng.Float64()*2-1)*speedJitterMPS
 			if v.speedMPS < 0 {
 				v.speedMPS = 0
 			}
-			v.pos = move(v.pos, v.headingDeg, v.speedMPS*dt.Seconds())
+			v.pos = move(v.pos, v.headingDeg, v.speedMPS*secs)
 		}
 	}
 
-	v.battery -= batteryDrainPerTick
+	v.battery -= batteryDrainPctPerSec * secs
 	if v.battery < 5 {
 		v.battery = 100 // treat as plugged in overnight
 	}

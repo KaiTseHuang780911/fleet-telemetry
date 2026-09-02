@@ -234,3 +234,70 @@ func TestDeviceIDsAreZeroPaddedAndUnique(t *testing.T) {
 		t.Errorf("twelfth device id = %q, want sim-vehicle-011", got)
 	}
 }
+
+// The simulator's behaviour must not depend on how fast it is ticked.
+//
+// This is a regression test for a real defect: dwell and stop frequency were
+// once expressed in ticks, so running the simulator with a short tick produced
+// stops of a few seconds. The device's own detector needs 45s before it reports
+// anything, so the generated data silently contained no client stop events at
+// all — and the reconciliation path it was meant to exercise went untested
+// while every test still passed.
+func TestStopBehaviourIsIndependentOfTickRate(t *testing.T) {
+	const simulatedSpan = 3 * time.Hour
+
+	for _, tick := range []time.Duration{
+		100 * time.Millisecond,
+		time.Second,
+		5 * time.Second,
+	} {
+		t.Run(tick.String(), func(t *testing.T) {
+			fleet := NewFleet(Config{Seed: 4242, Vehicles: 3})
+
+			now := simStart
+			for elapsed := time.Duration(0); elapsed < simulatedSpan; elapsed += tick {
+				for _, v := range fleet.Vehicles() {
+					v.Tick(now, tick)
+				}
+				now = now.Add(tick)
+			}
+
+			total := 0
+			for _, v := range fleet.Vehicles() {
+				for _, e := range v.TakeStopEvents() {
+					total++
+
+					if e.DepartedAt == nil {
+						t.Error("a completed stop event must carry a departure time")
+						continue
+					}
+					dwell := e.DepartedAt.Sub(e.ArrivedAt)
+
+					// The device only reports stops it considers real.
+					if dwell < clientMinStopDuration {
+						t.Errorf("reported a %s stop, below the %s reporting threshold",
+							dwell, clientMinStopDuration)
+					}
+					// And a dwell can never exceed the model's own bound, plus
+					// one tick of quantisation.
+					if dwell > maxDwell+tick {
+						t.Errorf("dwell %s exceeds the %s maximum", dwell, maxDwell)
+					}
+				}
+			}
+
+			// 3 vehicles x 3 hours at ~15 stops/hour is ~135 opportunities,
+			// most of which qualify. The band is wide because this asserts the
+			// rate is in the right ballpark at every tick size, not an exact
+			// count — the RNG draw sequence legitimately differs between them.
+			if total < 10 {
+				t.Errorf("only %d stop events over %s at a %s tick; the rate collapses at this tick size",
+					total, simulatedSpan, tick)
+			}
+			if total > 300 {
+				t.Errorf("%d stop events over %s at a %s tick is implausibly many",
+					total, simulatedSpan, tick)
+			}
+		})
+	}
+}

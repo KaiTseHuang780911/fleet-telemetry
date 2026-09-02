@@ -197,14 +197,32 @@ func TestBatchValidate(t *testing.T) {
 			wantErr: "device_id",
 		},
 		{
-			name:    "empty readings",
+			name:    "no readings and no stop events",
 			batch:   Batch{DeviceID: "device-1", Readings: []Reading{}},
-			wantErr: "empty",
+			wantErr: "must contain readings or stop_events",
 		},
 		{
-			name:    "nil readings",
+			name:    "nothing at all",
 			batch:   Batch{DeviceID: "device-1"},
-			wantErr: "empty",
+			wantErr: "must contain readings or stop_events",
+		},
+		{
+			// A device with only a departure to report should not have to
+			// invent a position to be allowed to send it.
+			name: "stop events with no readings is valid",
+			batch: Batch{
+				DeviceID:   "device-1",
+				StopEvents: []StopEvent{validStopEvent()},
+			},
+		},
+		{
+			name: "too many stop events",
+			batch: Batch{
+				DeviceID:   "device-1",
+				Readings:   []Reading{validReading()},
+				StopEvents: make([]StopEvent, MaxStopEventsPerBatch+1),
+			},
+			wantErr: "limit",
 		},
 		{
 			name: "batch over the size limit",
@@ -259,5 +277,96 @@ func TestOptionalFieldsDistinguishAbsentFromZero(t *testing.T) {
 	}
 	if *zero.SpeedMPS != 0 {
 		t.Errorf("expected 0, got %v", *zero.SpeedMPS)
+	}
+}
+
+func validStopEvent() StopEvent {
+	return StopEvent{
+		EventID:   uuid.MustParse("018f3c4a-0000-7000-8000-0000000000aa"),
+		ArrivedAt: testNow.Add(-10 * time.Minute),
+		Lat:       49.2827,
+		Lon:       -123.1207,
+	}
+}
+
+func TestStopEventValidate(t *testing.T) {
+	departed := testNow.Add(-5 * time.Minute)
+
+	tests := []struct {
+		name    string
+		mutate  func(*StopEvent)
+		wantErr string
+	}{
+		{
+			name:   "minimal valid stop event",
+			mutate: func(e *StopEvent) {},
+		},
+		{
+			// Normal, not an error: the device reports arrival immediately and
+			// departure later, so an open stop is the expected intermediate state.
+			name:   "open stop with no departure",
+			mutate: func(e *StopEvent) { e.DepartedAt = nil },
+		},
+		{
+			name:   "closed stop",
+			mutate: func(e *StopEvent) { e.DepartedAt = &departed },
+		},
+		{
+			name:    "missing event id",
+			mutate:  func(e *StopEvent) { e.EventID = uuid.Nil },
+			wantErr: "event_id",
+		},
+		{
+			name:    "missing arrival",
+			mutate:  func(e *StopEvent) { e.ArrivedAt = time.Time{} },
+			wantErr: "arrived_at",
+		},
+		{
+			name: "departure before arrival",
+			mutate: func(e *StopEvent) {
+				before := e.ArrivedAt.Add(-time.Minute)
+				e.DepartedAt = &before
+			},
+			wantErr: "before arrived_at",
+		},
+		{
+			// Hours-old stops are exactly what a drained offline queue delivers.
+			name:   "stop from hours ago is accepted",
+			mutate: func(e *StopEvent) { e.ArrivedAt = testNow.Add(-9 * time.Hour) },
+		},
+		{
+			name:    "arrival beyond the future skew allowance",
+			mutate:  func(e *StopEvent) { e.ArrivedAt = testNow.Add(MaxClockSkewAhead + time.Hour) },
+			wantErr: "future",
+		},
+		{
+			name:    "latitude out of range",
+			mutate:  func(e *StopEvent) { e.Lat = 91 },
+			wantErr: "lat",
+		},
+		{
+			name:    "longitude out of range",
+			mutate:  func(e *StopEvent) { e.Lon = -181 },
+			wantErr: "lon",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := validStopEvent()
+			tt.mutate(&e)
+
+			err := e.Validate(testNow)
+
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("expected acceptance, got: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", tt.wantErr, err)
+			}
+		})
 	}
 }

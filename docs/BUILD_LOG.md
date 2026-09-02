@@ -9,6 +9,54 @@ Newest entries at the top.
 
 ---
 
+## 2026-09-01 — Phase 1 finished: derivation and reconciliation
+
+**Delegated:** server-side trip and stop detection, the reconciliation pass, client stop
+reporting in the simulator, and the wiring for all of it.
+
+**What it got right:** identified before writing anything that derivation cannot be
+streaming. A device leaving a dead zone delivers hours of backlogged readings, so a
+detector reacting to arrivals would already have closed trips covering that period. That
+single constraint decided the whole architecture — recompute a window, replace it
+transactionally — and everything else followed from it.
+
+**What it got wrong — a condition that could never be true:** stops were linked to trips by
+testing whether the stop's arrival fell *inside* a trip's time span. Trips are the movement
+spans *between* stops, so that is never true. Every `trip_id` came out `NULL` while the code
+read perfectly plausibly, and the unit tests passed because none of them asserted the link.
+Caught only by looking at real API output. The fix links a stop to the latest trip ending
+before it — "the journey that brought the vehicle here" — with a regression test.
+
+**What it got wrong — a fixture whose meaning depended on its speed:** the simulator's
+motion model was written in ticks ("dwell 30 to 150 ticks"). Running it at a 60ms tick to
+generate data faster produced stops of 2-9 seconds, below the 45s the device needs before
+reporting one, so **zero client stop events were generated** and the entire reconciliation
+path silently had nothing to work on. Every test still passed. Rewritten in real units
+(stops per hour, dwell in seconds, scaled by dt) with a regression test asserting behaviour
+holds across 100ms, 1s, and 5s ticks.
+
+That is the second time this project has produced a green result from something that could
+not have failed. Worth noticing as a pattern rather than an incident.
+
+**Also wrong, minor:** a `distanceM` unit test asserted an exact distance through a test
+helper that uses the equatorial degree length, so it was off by 0.1% at Vancouver's
+latitude. Replaced with reference values independent of the helper.
+
+**Corrected by hand:** none this session — the design questions were settled up front.
+
+**Added along the way:** `SIM_TIME_SCALE` and `SIM_BACKFILL_MS`, which decouple simulated
+time from wall-clock time. Generating enough history to reconcile took hours at real speed;
+now four real minutes produce an hour of fleet activity, with timestamps starting in the
+past so they stay behind the server's clock. That also happens to exercise the offline
+backlog path for real.
+
+**Verified, not assumed:** derivation run three times over the same data produced identical
+counts, no accumulation, no orphaned matches, no event claimed twice, and client-reported
+rows untouched. All 52 derived stops linked to an arriving trip with zero ordering
+violations.
+
+---
+
 ## 2026-08-31 (later) — CI, and the two gaps it closed
 
 **Delegated:** a GitHub Actions workflow to verify what a Windows machine cannot.

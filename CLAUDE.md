@@ -24,7 +24,7 @@ being questioned in a job interview.
 /docs/adr        Architecture decision records
 ```
 
-One Go module at the repo root (`github.com/kaitsehuang780911/fleet-telemetry`) covers
+One Go module at the repo root (`github.com/KaiTseHuang780911/fleet-telemetry`) covers
 `/api`, `/sim`, and `/internal/wire`. Go scopes an `internal/` package to the subtree
 rooted at its parent directory, so root-level `/internal/wire` is importable from both
 services — `/api/internal/wire` would have been private to `/api`.
@@ -35,7 +35,9 @@ services — `/api/internal/wire` would have been private to `/api`.
   expo-location + expo-task-manager for background tracking, expo-sqlite for the offline
   queue, TanStack Query for server state, Zustand for local state, Sentry for crash
   reporting, Maestro for E2E.
-- **API:** Go 1.26, chi router, pgx for Postgres. Standard library first — do not add a
+- **API:** Go 1.26 toolchain, but `go.mod` declares `go 1.25.7` — that is set by `go mod
+  tidy` from goose's own requirement, not chosen, and it is also the minimum Go any static
+  analyser must be built with to inspect this module. chi router, pgx for Postgres. Standard library first — do not add a
   framework.
 - **Database:** PostgreSQL 17, installed natively (not Docker — see below). Plain, no
   Timescale for now. **BRIN goes on `positions.received_at`, not `recorded_at`** — BRIN
@@ -63,7 +65,8 @@ Worth knowing before suggesting commands — this machine is not a typical Unix 
   `E:\Claude\.gocache`) live on E:. Postgres data is at `E:\PostgreSQL\17\data`. In Phase 2
   the Android SDK and system images go on E:, but `GRADLE_USER_HOME` stays on C: — that is
   where the hot small-file build I/O happens.
-- **git is 2.24** — old. `git init -b`, `git switch`, and `git restore` are unavailable.
+- **git is 2.55** (upgraded 2026-08-27). Earlier sessions worked around 2.24 lacking
+  `git init -b`, `git switch`, and `git restore`; those are all available now.
 
 ## Rules
 
@@ -94,32 +97,37 @@ Worth knowing before suggesting commands — this machine is not a typical Unix 
 ## Current phase
 
 <!-- Update this each session. -->
-**Phase 1 — ingestion works end to end.** Schema and migrations, `POST /v1/telemetry` with
-a bounded channel and batch writer, shed-load backpressure, and a deterministic simulator.
-ADR-001 (schema and indexing), ADR-002 (hybrid reconciliation), ADR-003 (ingestion) are
+**Phase 1 complete.** Schema and migrations, `POST /v1/telemetry` with a bounded channel
+and batch writer, shed-load backpressure, a deterministic simulator, and server-side trip
+and stop derivation reconciled against device-reported stops. ADR-001 (schema and
+indexing), ADR-002 (hybrid reconciliation), ADR-003 (ingestion), ADR-004 (derivation) are
 written.
+
+**CI is green** on GitHub Actions (Linux, `postgres:17` service): gofmt, `go mod tidy`
+verification, vet, staticcheck, and `go test -race ./...` including store integration tests
+and a real SIGTERM shutdown test. Those last two cannot run on this machine — no cgo
+toolchain, and Windows has no SIGTERM — and they skip with an explicit reason rather than
+passing silently. Do not "fix" that by deleting the skip.
 
 Verified under load: with a one-slot buffer and 40 concurrent vehicles, 258 readings were
 shed with `503`, the simulator backed off and retried, and zero duplicate rows resulted.
 
-**Next, still in Phase 1:** server-side trip and stop derivation, plus the reconciliation
-pass that matches device-reported events against derived ones — the unbuilt half of ADR-002.
-Then GitHub Actions CI.
+Reconciliation over 8 simulated vehicles for an hour: 72 client stops, 52 derived, 52
+matched, 20 client-only, 0 derived-only, mean signed delta +5.9s, mean distance 30.8m. The
+client-only count is the device's 45s reporting threshold against the server's 120s; the
+consistent positive bias is the device timing arrival from when motion ceased while the
+server can only anchor on the first sample already at rest.
 
-**CI is green** on GitHub Actions (Linux, `postgres:17` service). It runs gofmt, `go mod
-tidy` verification, vet, staticcheck, and `go test -race ./...` including the store
-integration tests and a real SIGTERM shutdown test. Two gaps that could not be checked on
-this Windows machine are now closed there:
-- Graceful shutdown on SIGTERM — verified end to end, not just at the writer level.
-- The race detector — needs cgo, which this machine lacks.
+**Next: Phase 2 — the React Native driver app.** The Jobber-critical piece and the largest
+remaining chunk. Android SDK and system images go on E:, `GRADLE_USER_HOME` stays on C:.
 
-Both tests skip with an explicit reason on Windows rather than passing silently. Do not
-"fix" that by deleting the skip.
-
-**Remaining known gaps, deliberately not hidden:**
-- Server-side trip/stop derivation and the reconciliation pass are unbuilt — the schema
-  carries `source` and `stop_event_matches`, but nothing populates the derived side.
-- Device auto-registration on first sight is a development convenience and would be
-  replaced by device authentication in a real deployment.
-- A crash between `202` and the flush loses buffered readings. Bounded and deliberate
-  (the device resends what it was never told was durable), but real — see ADR-003.
+**Known gaps, deliberately not hidden:**
+- Detection thresholds are untuned guesses. The reconciliation numbers describe agreement
+  with a simulator whose stop model was written alongside them — a working harness, not a
+  measurement of reality.
+- Derivation truncates trips straddling the window's start edge. Mitigated by a generous
+  lookback, not solved.
+- Device auto-registration on first sight is a development convenience; a real deployment
+  would require device authentication.
+- A crash between `202` and the flush loses buffered readings. Bounded and deliberate — the
+  device resends what it was never told was durable — but real. See ADR-003.

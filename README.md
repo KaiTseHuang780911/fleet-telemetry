@@ -9,9 +9,10 @@ natural-language query layer read it back.
 Built as one coherent system rather than four unrelated demos — the mobile app is what
 generates the data everything else consumes.
 
-> **Status:** Phase 1. Ingestion works end to end — the simulator posts telemetry, the
-> API buffers and batch-writes it to Postgres, and replayed batches are absorbed without
-> duplicates. Trip and stop derivation are next. Phases 2–5 are not started.
+> **Status:** Phase 1 complete. The simulator posts telemetry and its own stop events, the
+> API buffers and batch-writes to Postgres, and a derivation pass reconstructs trips and
+> stops from the position stream and reconciles them against what the device reported.
+> Phases 2–5 (mobile app, platform layer, dashboard, NL query) are not started.
 
 ---
 
@@ -95,6 +96,8 @@ npm run dev               # API + simulator
 | `POST /v1/telemetry` | Batch of readings. Returns `202` with `{accepted, rejected}`; `503` with `Retry-After` when shedding load |
 | `GET /v1/vehicles` | All known vehicles |
 | `GET /v1/vehicles/{id}/trips` | Trips overlapping `?from=`/`?to=` (RFC 3339, default last 24h) |
+| `GET /v1/vehicles/{id}/stops` | Stop events; `?source=client` or `?source=derived` to narrow |
+| `GET /v1/reconciliation` | How far the device's own stop detection and the server's derivation disagree |
 | `GET /healthz` | Liveness — never touches the database |
 | `GET /readyz` | Readiness — pings the database, reports ingest counters |
 
@@ -107,6 +110,7 @@ blocks the device's queue forever. See [ADR-003](docs/adr/003-ingestion-pipeline
 | Command | Does |
 |---|---|
 | `npm run dev` | API and simulator together |
+| `npm run derive` | Recompute trips, stops, and reconciliation over the lookback window |
 | `npm run dev:api` / `dev:sim` / `dev:web` | one at a time |
 | `npm test` | Go tests. Store integration tests skip unless `TEST_DATABASE_URL` is set |
 | `npm run test:integration` | Store tests against a real Postgres |
@@ -135,6 +139,32 @@ Recorded here rather than silently — each was a deliberate call.
   the offline queue deliberately drains hours-old readings in a single batch — scattering
   old timestamps across fresh pages. The correlated column is `received_at`. Time-range
   queries by vehicle are served by a composite B-tree instead. See `docs/adr/`.
+
+## Two sources, reconciled
+
+Stops come from two places and both are kept. The device detects its own using sensor
+context the server never sees; the server derives its own from the position stream, where
+it can apply consistent thresholds across the fleet and cannot be misled by a buggy client.
+Neither overwrites the other, and `stop_event_matches` records which pairs correspond and
+how far apart they were.
+
+The unmatched events are the point. A run over 8 simulated vehicles for an hour:
+
+```
+client stops 72   derived 52   matched 52   client-only 20   derived-only 0
+mean signed delta +5.9s        mean distance 30.8m
+```
+
+Every figure there is explainable. The 20 client-only stops are the device reporting after
+45s where the server requires 120s. Zero derived-only follows: anything long enough for the
+server is long enough for the device. And the +5.9s is a *consistent bias*, not scatter —
+the device times arrival from the moment motion ceases, while the server can only anchor on
+the first sample already at rest. That is what a signed mean is for; an absolute mean would
+report the same number for random disagreement.
+
+Derivation recomputes a window rather than reacting to readings as they arrive, because a
+device leaving a dead zone delivers hours-old readings that a streaming detector would
+already have passed by. See [ADR-004](docs/adr/004-trip-and-stop-derivation.md).
 
 ## Documentation
 

@@ -38,6 +38,7 @@ type counters struct {
 	shed      atomic.Int64 // 503 responses
 	failed    atomic.Int64 // transport or 5xx other than 503
 	queueHigh atomic.Int64 // deepest a vehicle's local queue ever got
+	stopsSent atomic.Int64
 }
 
 func main() {
@@ -60,11 +61,28 @@ func run(logger *slog.Logger) error {
 		seed      = int64(envInt("SIM_SEED", 42))
 		tick      = time.Duration(envInt("SIM_TICK_MS", 1000)) * time.Millisecond
 		batchSize = envInt("SIM_BATCH_SIZE", 10)
+
+		// Simulated time need not run at wall-clock speed.
+		//
+		// At scale 1 the simulator produces one second of history per second,
+		// which makes generating enough data to see a stop — let alone enough
+		// to reconcile — a matter of hours. A higher scale advances the
+		// simulated clock faster per tick, so a few real minutes yield a full
+		// working day of fleet activity.
+		//
+		// Backfill starts the simulated clock in the past. That is both what
+		// makes accelerated time legitimate (timestamps stay behind the
+		// server's clock rather than running into the future, which the server
+		// rightly rejects) and a faithful reproduction of a device draining an
+		// offline backlog.
+		timeScale = float64(envInt("SIM_TIME_SCALE", 1))
+		backfill  = time.Duration(envInt("SIM_BACKFILL_MS", 0)) * time.Millisecond
 	)
 
 	logger.Info("starting simulator",
 		"api", apiURL, "vehicles", vehicles, "seed", seed,
-		"tick_ms", tick.Milliseconds(), "batch_size", batchSize)
+		"tick_ms", tick.Milliseconds(), "batch_size", batchSize,
+		"time_scale", timeScale, "backfill_ms", backfill.Milliseconds())
 
 	fleet := trace.NewFleet(trace.Config{Seed: seed, Vehicles: vehicles})
 
@@ -92,7 +110,7 @@ func run(logger *slog.Logger) error {
 		wg.Add(1)
 		go func(v *trace.Vehicle) {
 			defer wg.Done()
-			runVehicle(ctx, v, client, apiURL, tick, batchSize, &stats, logger)
+			runVehicle(ctx, v, client, apiURL, tick, batchSize, timeScale, backfill, &stats, logger)
 		}(v)
 	}
 
@@ -109,6 +127,7 @@ func run(logger *slog.Logger) error {
 		"rejected", stats.rejected.Load(),
 		"shed_503", stats.shed.Load(),
 		"failed", stats.failed.Load(),
+		"stop_events_sent", stats.stopsSent.Load(),
 		"max_queue_depth", stats.queueHigh.Load())
 	return nil
 }
@@ -120,6 +139,8 @@ func runVehicle(
 	apiURL string,
 	tick time.Duration,
 	batchSize int,
+	timeScale float64,
+	backfill time.Duration,
 	stats *counters,
 	logger *slog.Logger,
 ) {
@@ -137,9 +158,18 @@ func runVehicle(
 	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
 
+	// The simulated clock, which advances by simDT on every tick regardless of
+	// how long the tick actually took in real time.
+	simNow := time.Now().UTC().Add(-backfill)
+	simDT := time.Duration(float64(tick) * timeScale)
+
 	// The device's local queue. Readings stay here until the server accepts
 	// them — this is the simulator's stand-in for the SQLite offline queue.
 	queue := make([]wire.Reading, 0, batchSize*4)
+	// Stop events queue alongside the readings and ride the same request. They
+	// are only cleared when the server takes the batch, so a shed or failed
+	// post keeps them exactly like the readings.
+	stopQueue := make([]wire.StopEvent, 0, 8)
 
 	for {
 		select {
@@ -150,8 +180,18 @@ func runVehicle(
 			// queue exists to answer.
 			return
 
-		case now := <-ticker.C:
-			queue = append(queue, v.Tick(now.UTC(), tick))
+		case <-ticker.C:
+			// Never let the simulated clock overtake the server's. Readings
+			// from the future are refused by design, and silently generating
+			// rejected data would look like a working simulator producing
+			// nothing.
+			if wall := time.Now().UTC(); simNow.After(wall) {
+				simNow = wall
+			}
+
+			queue = append(queue, v.Tick(simNow, simDT))
+			stopQueue = append(stopQueue, v.TakeStopEvents()...)
+			simNow = simNow.Add(simDT)
 
 			if depth := int64(len(queue)); depth > stats.queueHigh.Load() {
 				stats.queueHigh.Store(depth)
@@ -160,7 +200,7 @@ func runVehicle(
 				continue
 			}
 
-			accepted, rejected, retryAfter, err := post(ctx, client, apiURL, v.DeviceID, queue)
+			accepted, rejected, retryAfter, err := post(ctx, client, apiURL, v.DeviceID, queue, stopQueue)
 			switch {
 			case err != nil:
 				stats.failed.Add(1)
@@ -181,6 +221,7 @@ func runVehicle(
 
 			default:
 				stats.posted.Add(1)
+				stats.stopsSent.Add(int64(len(stopQueue)))
 				stats.accepted.Add(int64(accepted))
 				stats.rejected.Add(int64(len(rejected)))
 				if len(rejected) > 0 {
@@ -191,6 +232,7 @@ func runVehicle(
 						"device", v.DeviceID, "count", len(rejected), "first_reason", rejected[0].Reason)
 				}
 				queue = queue[:0]
+				stopQueue = stopQueue[:0]
 			}
 		}
 	}
@@ -203,11 +245,13 @@ func post(
 	client *http.Client,
 	apiURL, deviceID string,
 	readings []wire.Reading,
+	stops []wire.StopEvent,
 ) (accepted int, rejected []wire.Rejection, retryAfter time.Duration, err error) {
 	body, err := json.Marshal(wire.Batch{
-		DeviceID: deviceID,
-		SentAt:   time.Now().UTC(),
-		Readings: readings,
+		DeviceID:   deviceID,
+		SentAt:     time.Now().UTC(),
+		Readings:   readings,
+		StopEvents: stops,
 	})
 	if err != nil {
 		return 0, nil, 0, fmt.Errorf("encode batch: %w", err)
@@ -248,7 +292,9 @@ func post(
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return 0, nil, 0, fmt.Errorf("decode response: %w", err)
 	}
-	return out.Accepted, out.Rejected, 0, nil
+	// Reported together: both kinds are things the server will never accept and
+	// the client must drop, and the caller treats them identically.
+	return out.Accepted, append(out.Rejected, out.RejectedStops...), 0, nil
 }
 
 func reportPeriodically(ctx context.Context, stats *counters, logger *slog.Logger) {
@@ -265,6 +311,7 @@ func reportPeriodically(ctx context.Context, stats *counters, logger *slog.Logge
 				"readings_rejected", stats.rejected.Load(),
 				"shed_503", stats.shed.Load(),
 				"failed", stats.failed.Load(),
+				"stop_events_sent", stats.stopsSent.Load(),
 				"max_queue_depth", stats.queueHigh.Load())
 		}
 	}

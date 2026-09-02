@@ -27,7 +27,10 @@ type Store interface {
 	Ping(ctx context.Context) error
 	ListVehicles(ctx context.Context) ([]store.Vehicle, error)
 	ListTripsForVehicle(ctx context.Context, vehicleID uuid.UUID, from, to time.Time) ([]store.Trip, error)
+	ListStopEvents(ctx context.Context, vehicleID uuid.UUID, from, to time.Time, source string) ([]store.StopEvent, error)
 	VehicleIDForDevice(ctx context.Context, externalID string) (uuid.UUID, error)
+	InsertClientStopEvents(ctx context.Context, events []store.StopEvent) (int, error)
+	SummariseReconciliation(ctx context.Context, from, to time.Time) (store.ReconciliationSummary, error)
 }
 
 // Server holds handler dependencies.
@@ -70,6 +73,8 @@ func (s *Server) Routes() http.Handler {
 		r.Post("/telemetry", s.handleTelemetry)
 		r.Get("/vehicles", s.handleListVehicles)
 		r.Get("/vehicles/{id}/trips", s.handleVehicleTrips)
+		r.Get("/vehicles/{id}/stops", s.handleVehicleStops)
+		r.Get("/reconciliation", s.handleReconciliation)
 	})
 
 	return r

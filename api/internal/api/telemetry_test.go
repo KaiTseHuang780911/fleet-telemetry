@@ -29,6 +29,9 @@ type fakeStore struct {
 	vehicleID  uuid.UUID
 	vehicleErr error
 	pingErr    error
+	stopsErr   error
+
+	insertedStops []store.StopEvent
 }
 
 func (f *fakeStore) Ping(context.Context) error { return f.pingErr }
@@ -46,6 +49,22 @@ func (f *fakeStore) VehicleIDForDevice(context.Context, string) (uuid.UUID, erro
 		return uuid.Nil, f.vehicleErr
 	}
 	return f.vehicleID, nil
+}
+
+func (f *fakeStore) ListStopEvents(context.Context, uuid.UUID, time.Time, time.Time, string) ([]store.StopEvent, error) {
+	return []store.StopEvent{}, nil
+}
+
+func (f *fakeStore) InsertClientStopEvents(_ context.Context, events []store.StopEvent) (int, error) {
+	if f.stopsErr != nil {
+		return 0, f.stopsErr
+	}
+	f.insertedStops = append(f.insertedStops, events...)
+	return len(events), nil
+}
+
+func (f *fakeStore) SummariseReconciliation(context.Context, time.Time, time.Time) (store.ReconciliationSummary, error) {
+	return store.ReconciliationSummary{}, nil
 }
 
 type fakeWriter struct {
@@ -153,8 +172,8 @@ func TestTelemetryAcceptsValidReadingsAndReportsRejectedOnes(t *testing.T) {
 	}
 	// The client must be told *which* reading to discard, or it cannot make
 	// progress.
-	if resp.Rejected[0].ReadingID != badID {
-		t.Errorf("rejected reading_id = %q, want %q", resp.Rejected[0].ReadingID, badID)
+	if resp.Rejected[0].ID != badID {
+		t.Errorf("rejected reading_id = %q, want %q", resp.Rejected[0].ID, badID)
 	}
 	if !strings.Contains(resp.Rejected[0].Reason, "lat") {
 		t.Errorf("reason = %q, want it to mention lat", resp.Rejected[0].Reason)
@@ -244,13 +263,13 @@ func TestTelemetryRejectsMalformedRequests(t *testing.T) {
 			name:       "empty readings array",
 			body:       `{"device_id":"dev-1","readings":[]}`,
 			wantStatus: http.StatusBadRequest,
-			wantErr:    "empty",
+			wantErr:    "must contain readings or stop_events",
 		},
 		{
 			name:       "readings omitted entirely",
 			body:       `{"device_id":"dev-1"}`,
 			wantStatus: http.StatusBadRequest,
-			wantErr:    "empty",
+			wantErr:    "must contain readings or stop_events",
 		},
 	}
 

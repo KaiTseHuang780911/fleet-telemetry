@@ -6,6 +6,7 @@
 //	api migrate up       apply all pending migrations
 //	api migrate down     roll back exactly one migration
 //	api migrate status   list applied and pending migrations
+//	api derive           recompute trips, stops, and reconciliation
 //
 // Migrations live in the same binary as the server so that a deploy and its
 // schema change ship as one artifact.
@@ -25,6 +26,7 @@ import (
 
 	"github.com/KaiTseHuang780911/fleet-telemetry/api/internal/api"
 	"github.com/KaiTseHuang780911/fleet-telemetry/api/internal/db"
+	"github.com/KaiTseHuang780911/fleet-telemetry/api/internal/derive"
 	"github.com/KaiTseHuang780911/fleet-telemetry/api/internal/ingest"
 	"github.com/KaiTseHuang780911/fleet-telemetry/api/internal/store"
 	"github.com/KaiTseHuang780911/fleet-telemetry/internal/config"
@@ -81,9 +83,68 @@ func dispatch(logger *slog.Logger) error {
 		default:
 			return fmt.Errorf("unknown migrate action %q: want up, down, or status", action)
 		}
+	case "derive":
+		return runDerive(logger)
+
 	default:
-		return fmt.Errorf("unknown command %q: want migrate, or no argument to serve", os.Args[1])
+		return fmt.Errorf("unknown command %q: want migrate or derive, or no argument to serve", os.Args[1])
 	}
+}
+
+// runDerive recomputes derived data over a window and exits.
+//
+// A subcommand rather than only a background loop, because derivation is a
+// scheduled job in any real deployment: every API replica running its own copy
+// would be duplicated work at best and contention at worst. As a subcommand it
+// is a cron entry, a Fly.io scheduled machine, or a CI step, and it can be
+// pointed at a chosen window to backfill.
+func runDerive(logger *slog.Logger) error {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		return errors.New("DATABASE_URL is not set")
+	}
+
+	ctx := context.Background()
+	st, err := store.New(ctx, dsn)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	lookback := envDuration("DERIVE_LOOKBACK_MS", 24*time.Hour)
+	from, to := derive.WindowFor(time.Now().UTC(), lookback)
+
+	runner := derive.NewRunner(st, deriveConfig(), logger)
+	sum, err := runner.Run(ctx, from, to)
+	if err != nil {
+		return err
+	}
+
+	logger.Info("derivation complete",
+		"from", from.Format(time.RFC3339),
+		"to", to.Format(time.RFC3339),
+		"vehicles", sum.Vehicles,
+		"trips", sum.Trips,
+		"derived_stops", sum.DerivedStops,
+		"client_stops", sum.ClientStops,
+		"matched", sum.Matched,
+		"client_only", sum.ClientOnly,
+		"derived_only", sum.DerivedOnly,
+		"duration_ms", sum.Duration.Milliseconds())
+	return nil
+}
+
+// deriveConfig reads the detection thresholds from the environment, falling
+// back to the documented defaults. See ADR-004 for why each exists and why the
+// defaults are guesses rather than measurements.
+func deriveConfig() derive.Config {
+	cfg := derive.DefaultConfig()
+	cfg.StopRadiusM = envFloat("DERIVE_STOP_RADIUS_M", cfg.StopRadiusM)
+	cfg.StopMinDuration = envDuration("DERIVE_STOP_MIN_MS", cfg.StopMinDuration)
+	cfg.TripGapDuration = envDuration("DERIVE_TRIP_GAP_MS", cfg.TripGapDuration)
+	cfg.MatchMaxTimeDelta = envDuration("DERIVE_MATCH_MAX_DELTA_MS", cfg.MatchMaxTimeDelta)
+	cfg.MatchMaxDistance = envFloat("DERIVE_MATCH_MAX_DISTANCE_M", cfg.MatchMaxDistance)
+	return cfg
 }
 
 // run holds the real logic so that every failure path can return an error
@@ -114,6 +175,17 @@ func run(logger *slog.Logger) error {
 	writerCtx, stopWriter := context.WithCancel(context.Background())
 	defer stopWriter()
 	go writer.Run(writerCtx)
+
+	// Opt-in in-process derivation. Off unless DERIVE_INTERVAL_MS is set,
+	// because in a multi-replica deployment every replica would run the same
+	// pass. It exists so `npm run dev` shows live trips and reconciliation
+	// without a second terminal or a scheduler.
+	if interval := envDuration("DERIVE_INTERVAL_MS", 0); interval > 0 {
+		lookback := envDuration("DERIVE_LOOKBACK_MS", 24*time.Hour)
+		logger.Info("in-process derivation enabled",
+			"interval_ms", interval.Milliseconds(), "lookback_ms", lookback.Milliseconds())
+		go derive.NewRunner(st, deriveConfig(), logger).RunPeriodically(writerCtx, interval, lookback)
+	}
 
 	addr := ":" + envOr("PORT", "8080")
 	srv := &http.Server{
@@ -201,8 +273,22 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	ms, err := strconv.Atoi(v)
-	if err != nil || ms <= 0 {
+	// Negative is nonsense, but zero is meaningful: it is how the derivation
+	// ticker is switched off explicitly rather than by omission.
+	if err != nil || ms < 0 {
 		return fallback
 	}
 	return time.Duration(ms) * time.Millisecond
+}
+
+func envFloat(key string, fallback float64) float64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil || f <= 0 {
+		return fallback
+	}
+	return f
 }
