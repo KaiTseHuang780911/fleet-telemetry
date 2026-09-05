@@ -124,3 +124,32 @@ jobs:
       # the analyser is always at least as new as what it analyses.
       - name: Staticcheck
         run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...
+
+  # Separate job so a mobile failure is distinguishable from a backend one at a
+  # glance, and so it runs in parallel rather than adding to the critical path.
+  mobile:
+    name: Mobile
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      # `npm ci` rather than `npm install`: it installs exactly the lockfile and
+      # fails if package.json and the lock have drifted, which is the check that
+      # keeps CI honest about what a fresh clone gets.
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test -- --ci

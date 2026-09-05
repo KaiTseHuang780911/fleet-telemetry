@@ -97,37 +97,31 @@ Worth knowing before suggesting commands — this machine is not a typical Unix 
 ## Current phase
 
 <!-- Update this each session. -->
-**Phase 1 complete.** Schema and migrations, `POST /v1/telemetry` with a bounded channel
-and batch writer, shed-load backpressure, a deterministic simulator, and server-side trip
-and stop derivation reconciled against device-reported stops. ADR-001 (schema and
-indexing), ADR-002 (hybrid reconciliation), ADR-003 (ingestion), ADR-004 (derivation) are
-written.
+**Phase 2, slice 1 in progress.** Phase 1 is complete (schema, ingestion with shed-load
+backpressure, derivation, reconciliation; ADRs 001-004; CI green on Linux with the race
+detector and a real SIGTERM test).
 
-**CI is green** on GitHub Actions (Linux, `postgres:17` service): gofmt, `go mod tidy`
-verification, vet, staticcheck, and `go test -race ./...` including store integration tests
-and a real SIGTERM shutdown test. Those last two cannot run on this machine — no cgo
-toolchain, and Windows has no SIGTERM — and they skip with an explicit reason rather than
-passing silently. Do not "fix" that by deleting the skip.
+The mobile app now exists at `/mobile`: Expo SDK 57, RN 0.86, TypeScript strict plus
+`noUncheckedIndexedAccess`. Slice 1 is the durable offline outbox and a debug screen to
+observe it. 50 unit tests, app bundles for Android.
 
-Verified under load: with a one-slot buffer and 40 concurrent vehicles, 258 readings were
-shed with `503`, the simulator backed off and retried, and zero duplicate rows resulted.
+**Mobile toolchain notes (Windows):**
+- JDK 17 (Temurin) is installed and `JAVA_HOME` points at it. `_JAVA_OPTIONS` is
+  overridden at **user** level to `-Xmx4096M` because a machine-level `-Xmx1024M` would
+  otherwise starve Gradle. An empty user value does NOT override a machine value.
+- Android Studio is installed; the SDK is not yet — its first-run wizard is interactive.
+  When it runs, point the SDK at `E:\Android\Sdk`; `GRADLE_USER_HOME` stays on C:.
+- `localhost` is unreachable from a phone. `EXPO_PUBLIC_API_URL` must be the machine's
+  LAN address; the emulator uses `10.0.2.2`.
 
-Reconciliation over 8 simulated vehicles for an hour: 72 client stops, 52 derived, 52
-matched, 20 client-only, 0 derived-only, mean signed delta +5.9s, mean distance 30.8m. The
-client-only count is the device's 45s reporting threshold against the server's 120s; the
-consistent positive bias is the device timing arrival from when motion ceased while the
-server can only anchor on the first sample already at rest.
-
-**Next: Phase 2 — the React Native driver app.** The Jobber-critical piece and the largest
-remaining chunk. Android SDK and system images go on E:, `GRADLE_USER_HOME` stays on C:.
+**Next slices:** background location with a foreground service, arrival detection,
+battery-aware sampling, the route/stop UI, then EAS Build to a signed APK. Google Play
+submission is deferred — no developer account yet.
 
 **Known gaps, deliberately not hidden:**
-- Detection thresholds are untuned guesses. The reconciliation numbers describe agreement
-  with a simulator whose stop model was written alongside them — a working harness, not a
-  measurement of reality.
-- Derivation truncates trips straddling the window's start edge. Mitigated by a generous
-  lookback, not solved.
-- Device auto-registration on first sight is a development convenience; a real deployment
-  would require device authentication.
-- A crash between `202` and the flush loses buffered readings. Bounded and deliberate — the
-  device resends what it was never told was durable — but real. See ADR-003.
+- `SqliteOutbox` is untested. The engine is covered through the shared `OutboxStore`
+  interface, but the SQL has never run. First thing to check on a device.
+- Detection thresholds in the derivation pass are untuned guesses.
+- Derivation truncates trips straddling the window's start edge.
+- Device auto-registration is a development convenience, not authentication.
+- A crash between `202` and the server-side flush loses buffered readings. See ADR-003.

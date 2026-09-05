@@ -1,0 +1,16 @@
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true,
+    // Expo's base config does not pull in test globals, so `describe`/`expect`
+    // are unresolved without this even though @types/jest is installed.
+    "types": ["jest"],
+    // Catches `arr[i]` returning undefined and object lookups that may miss —
+    // both of which the queue does constantly.
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "exactOptionalPropertyTypes": false
+  },
+  "include": ["**/*.ts", "**/*.tsx"],
+  "exclude": ["node_modules"]
+}

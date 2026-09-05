@@ -9,6 +9,53 @@ Newest entries at the top.
 
 ---
 
+## 2026-09-05 — Phase 2 slice 1: the offline sync queue
+
+**Delegated:** Android toolchain setup, the Expo scaffold, and the durable outbox.
+
+**Chosen against the recommendation:** building the queue before any UI. The stated
+downside was that nothing is observable while it is built. Mitigated rather than argued
+with — the slice ships a debug screen showing queue depth, quarantine count, last drain
+result, and a simulated-offline toggle, so the behaviour can be watched instead of
+inferred from logs.
+
+**Two environment landmines found before they could bite:**
+- `JAVA_HOME` pointed at **JDK 1.8**. Android Gradle needs 17.
+- `_JAVA_OPTIONS=-Xmx1024M` was set at **machine** level, so every JVM on the box
+  silently capped its heap at 1 GB. Gradle wants several. This would have surfaced as
+  inexplicable OOM build failures that look like Gradle bugs.
+
+Both were machine-scoped on what is a work machine, so they were overridden at **user**
+level rather than changed globally. Worth knowing: setting a user variable to an *empty*
+string does not override a machine value — Windows treats empty as unset and falls back.
+It has to be a non-empty value. The first attempt looked like it worked and did not; only
+reading `MaxHeapSize` back out of a running JVM proved it.
+
+**The design the slice rests on:** at-least-once delivery plus an idempotent server is
+effectively-once. Rows leave the queue only after a confirmed 202, so a process killed
+mid-request resends and `ON CONFLICT DO NOTHING` absorbs it. The queue therefore keeps
+**no in-flight state** — and it is precisely that state, written between "sending" and
+"sent", that loses data when Android kills an app at the wrong moment. Phase 1's
+client-generated UUIDv7 primary key exists for this.
+
+Client-side poison-message handling mirrors the server's: items the server names as
+rejected are deleted rather than retried, and items that keep failing are quarantined to
+a dead-letter table so the queue can drain. Same failure mode, the other end of the wire.
+
+**Deliberate strictness that paid off immediately:** turning on `noUncheckedIndexedAccess`
+surfaced five unchecked array accesses in the tests. Fixed with a helper that fails loudly
+rather than with non-null assertions, which would have defeated the setting.
+
+**Verified:** 50 unit tests; the app bundles for Android (650 modules).
+
+**Not verified, and this is the honest gap:** `SqliteOutbox` has zero test coverage. The
+engine is tested through the same `OutboxStore` interface, so the contract is covered, but
+the SQL itself has never executed. That needs a device or emulator. Given this project's
+recent history of green results from things that could not fail, it is worth saying plainly
+rather than letting the passing suite imply otherwise.
+
+---
+
 ## 2026-09-01 — Phase 1 finished: derivation and reconciliation
 
 **Delegated:** server-side trip and stop detection, the reconciliation pass, client stop

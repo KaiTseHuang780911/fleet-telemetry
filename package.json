@@ -12,26 +12,26 @@
     "dev:api": "go run ./api/cmd/api",
     "dev:sim": "go run ./sim/cmd/sim",
     "dev:web": "npm --prefix web run dev",
-
+    "mobile:start": "npm --prefix mobile run start",
+    "mobile:android": "npm --prefix mobile run android",
+    "mobile:test": "npm --prefix mobile test",
+    "mobile:typecheck": "npm --prefix mobile run typecheck",
     "build": "go build -o bin/ ./api/cmd/api ./sim/cmd/sim",
-
-    "test": "run-s test:go",
+    "test": "run-s test:go test:mobile",
     "test:go": "go test ./...",
     "test:integration": "go test -count=1 ./api/internal/store/...",
-
-    "lint": "run-s lint:go fmt:check",
+    "lint": "run-s lint:go fmt:check mobile:typecheck",
     "lint:go": "go vet ./...",
     "fmt": "gofmt -l -w .",
     "fmt:check": "gofmt -l .",
-
     "db:setup": "psql -U postgres -h localhost -v ON_ERROR_STOP=1 -f scripts/db-setup.sql",
     "db:psql": "psql -U fleet -h localhost -d fleet",
     "derive": "go run ./api/cmd/api derive",
-
     "db:migrate": "go run ./api/cmd/api migrate up",
     "db:migrate:status": "go run ./api/cmd/api migrate status",
     "db:migrate:down": "go run ./api/cmd/api migrate down",
-    "db:reset": "psql -U postgres -h localhost -v ON_ERROR_STOP=1 -f scripts/db-reset.sql"
+    "db:reset": "psql -U postgres -h localhost -v ON_ERROR_STOP=1 -f scripts/db-reset.sql",
+    "test:mobile": "npm --prefix mobile test"
   },
   "devDependencies": {
     "npm-run-all": "^4.1.5"
