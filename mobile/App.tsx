@@ -70,6 +70,7 @@ export default function App() {
   const [simulateOffline, setSimulateOffline] = useState(false);
   const [networkOnline, setNetworkOnline] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [pollError, setPollError] = useState<string | null>(null);
 
   const storeRef = useRef<SqliteOutbox | null>(null);
   const engineRef = useRef<SyncEngine | null>(null);
@@ -121,6 +122,16 @@ export default function App() {
 
     return () => {
       cancelled = true;
+      // Close the database. Without this, every Fast Refresh opened another
+      // handle and abandoned the previous one; the released native database
+      // then failed every subsequent call with a NullPointerException, once
+      // per poll, forever. A leaked handle is wrong regardless of whether a
+      // production build ever hot-reloads.
+      const store = storeRef.current;
+      storeRef.current = null;
+      engineRef.current = null;
+      transportRef.current = null;
+      void store?.close();
     };
   }, [note]);
 
@@ -131,16 +142,41 @@ export default function App() {
     if (transportRef.current) transportRef.current.online = !simulateOffline;
   }, [simulateOffline]);
 
-  const refresh = useCallback(async () => {
+  // Returns false when the store is no longer usable, so the caller can stop
+  // polling instead of producing one unhandled rejection per second.
+  const refresh = useCallback(async (): Promise<boolean> => {
     const engine = engineRef.current;
-    if (engine) setStatus(await engine.status());
+    if (!engine) return false;
+    try {
+      setStatus(await engine.status());
+      return true;
+    } catch (err) {
+      setPollError(err instanceof Error ? err.message : String(err));
+      return false;
+    }
   }, []);
 
   useEffect(() => {
     if (!ready) return;
-    void refresh();
-    const timer = setInterval(() => void refresh(), 1000);
-    return () => clearInterval(timer);
+    let stopped = false;
+
+    const tick = async () => {
+      if (stopped) return;
+      const ok = await refresh();
+      if (!ok) {
+        // One visible failure beats a thousand identical red boxes. Whatever
+        // broke the store will not fix itself on the next tick.
+        stopped = true;
+        clearInterval(timer);
+      }
+    };
+
+    void tick();
+    const timer = setInterval(() => void tick(), 1000);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
   }, [ready, refresh]);
 
   const record = useCallback(
@@ -257,6 +293,14 @@ export default function App() {
           <Text style={styles.dim}>simulate offline</Text>
           <Switch value={simulateOffline} onValueChange={setSimulateOffline} />
         </View>
+
+        {pollError ? (
+          <View style={styles.warning}>
+            <Text style={styles.warningText}>
+              Status polling stopped: {pollError}
+            </Text>
+          </View>
+        ) : null}
 
         {backoffRemaining > 0 ? (
           <Text style={styles.dim}>backing off for {(backoffRemaining / 1000).toFixed(1)}s</Text>

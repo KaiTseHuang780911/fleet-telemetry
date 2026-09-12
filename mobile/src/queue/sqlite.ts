@@ -32,7 +32,24 @@ interface OutboxRow {
 }
 
 export class SqliteOutbox implements OutboxStore {
+  private closed = false;
+
   private constructor(private readonly db: SQLite.SQLiteDatabase) {}
+
+  /**
+   * Guards every method against use after close.
+   *
+   * Without this, calling into a closed handle surfaces as
+   * "NativeDatabase.prepareAsync has been rejected -> NullPointerException",
+   * which says nothing about what actually went wrong. The null pointer is the
+   * released native database; the real fault is upstream, in whatever kept a
+   * reference to a store it had already closed.
+   */
+  private assertOpen(): void {
+    if (this.closed) {
+      throw new Error('SqliteOutbox has been closed; this handle can no longer be used');
+    }
+  }
 
   static async open(name: string = DB_NAME): Promise<SqliteOutbox> {
     const db = await SQLite.openDatabaseAsync(name);
@@ -99,6 +116,7 @@ export class SqliteOutbox implements OutboxStore {
 
   async enqueue(items: OutboxItem[]): Promise<void> {
     if (items.length === 0) return;
+    this.assertOpen();
 
     await this.db.withExclusiveTransactionAsync(async (txn) => {
       for (const item of items) {
@@ -124,6 +142,7 @@ export class SqliteOutbox implements OutboxStore {
   }
 
   async peek(limit: number): Promise<OutboxItem[]> {
+    this.assertOpen();
     const rows = await this.db.getAllAsync<OutboxRow>(
       `SELECT id, kind, recorded_at, payload, attempts, last_error, created_at
          FROM outbox
@@ -136,6 +155,7 @@ export class SqliteOutbox implements OutboxStore {
 
   async remove(ids: string[]): Promise<void> {
     if (ids.length === 0) return;
+    this.assertOpen();
     await this.db.runAsync(
       `DELETE FROM outbox WHERE id IN (${placeholders(ids.length)})`,
       ids,
@@ -144,6 +164,7 @@ export class SqliteOutbox implements OutboxStore {
 
   async recordFailure(ids: string[], error: string): Promise<void> {
     if (ids.length === 0) return;
+    this.assertOpen();
     await this.db.runAsync(
       `UPDATE outbox
           SET attempts = attempts + 1, last_error = ?
@@ -154,6 +175,7 @@ export class SqliteOutbox implements OutboxStore {
 
   async quarantine(ids: string[], reason: string): Promise<void> {
     if (ids.length === 0) return;
+    this.assertOpen();
 
     // Copy then delete, in one transaction. Doing it in two statements outside
     // a transaction risks a crash between them, which would either lose the
@@ -175,16 +197,19 @@ export class SqliteOutbox implements OutboxStore {
   }
 
   async count(): Promise<number> {
+    this.assertOpen();
     const row = await this.db.getFirstAsync<{ n: number }>('SELECT count(*) AS n FROM outbox');
     return row?.n ?? 0;
   }
 
   async deadCount(): Promise<number> {
+    this.assertOpen();
     const row = await this.db.getFirstAsync<{ n: number }>('SELECT count(*) AS n FROM outbox_dead');
     return row?.n ?? 0;
   }
 
   async trimToCap(cap: number): Promise<number> {
+    this.assertOpen();
     const total = await this.count();
     const excess = total - cap;
     if (excess <= 0) return 0;
@@ -202,6 +227,7 @@ export class SqliteOutbox implements OutboxStore {
   }
 
   async getSetting(key: string): Promise<string | null> {
+    this.assertOpen();
     const row = await this.db.getFirstAsync<{ value: string }>(
       'SELECT value FROM settings WHERE key = ?',
       [key],
@@ -210,6 +236,7 @@ export class SqliteOutbox implements OutboxStore {
   }
 
   async setSetting(key: string, value: string): Promise<void> {
+    this.assertOpen();
     await this.db.runAsync(
       'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
       [key, value],
@@ -230,6 +257,10 @@ export class SqliteOutbox implements OutboxStore {
   }
 
   async close(): Promise<void> {
+    // Idempotent: closing twice is a no-op rather than an error, because
+    // cleanup paths are exactly where double-calls happen.
+    if (this.closed) return;
+    this.closed = true;
     await this.db.closeAsync();
   }
 }
