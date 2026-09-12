@@ -16,6 +16,7 @@ import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -326,16 +327,45 @@ function Button({
   );
 }
 
+/**
+ * Android clips bold text, and the fix is to avoid synthetic bold entirely.
+ *
+ * The default font family has no real 600/700 face, so Android synthesises one:
+ * it measures the string with the *regular* face, then draws it with widened
+ * glyphs. The drawn text is therefore wider than the box reserved for it and
+ * the tail is cut off — "Record 250" rendered as "Record", "Drain" as "Drai".
+ *
+ * The giveaway is that the loss scales with length (one character on "Drain",
+ * four on "Record 250") and affects only bold text; "simulate offline" is
+ * longer and renders fine at normal weight. That also rules out the two
+ * plausible-looking wrong answers: a fixed padding cannot absorb a
+ * proportional overflow, and flexShrink is irrelevant because the container is
+ * already sized correctly — it is the glyphs that overflow it.
+ *
+ * `sans-serif-medium` is a real Android font family with its own weight, so
+ * nothing is synthesised and measurement matches rendering. iOS has proper
+ * weights for the system font and needs none of this.
+ */
+const bold = Platform.select({
+  android: { fontFamily: 'sans-serif-medium', fontWeight: 'normal' as const },
+  default: { fontWeight: '600' as const },
+});
+
+const heavy = Platform.select({
+  android: { fontFamily: 'sans-serif-black', fontWeight: 'normal' as const },
+  default: { fontWeight: '700' as const },
+});
+
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: '#0d1117' },
   centre: { alignItems: 'center', justifyContent: 'center', gap: 8 },
   content: { padding: 20, paddingTop: 60, gap: 12 },
-  title: { color: '#e6edf3', fontSize: 28, fontWeight: '600' },
+  title: { color: '#e6edf3', fontSize: 28, ...bold },
   dim: { color: '#8b949e', fontSize: 13 },
   mono: { color: '#8b949e', fontSize: 12, fontFamily: 'monospace' },
-  good: { color: '#3fb950', fontSize: 13, fontWeight: '600' },
-  bad: { color: '#f85149', fontSize: 13, fontWeight: '600' },
-  error: { color: '#f85149', fontSize: 18, fontWeight: '600' },
+  good: { color: '#3fb950', fontSize: 13, ...bold },
+  bad: { color: '#f85149', fontSize: 13, ...bold },
+  error: { color: '#f85149', fontSize: 18, ...bold },
   row: { flexDirection: 'row', gap: 12, marginTop: 8 },
   stat: {
     flex: 1,
@@ -345,7 +375,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 2,
   },
-  statValue: { color: '#e6edf3', fontSize: 24, fontWeight: '700' },
+  statValue: { color: '#e6edf3', fontSize: 24, ...heavy },
   line: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   buttons: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 },
   button: {
@@ -353,12 +383,13 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     paddingVertical: 10,
     paddingHorizontal: 14,
+    flexShrink: 0,
   },
   buttonPrimary: { backgroundColor: '#238636' },
   buttonDim: { opacity: 0.5 },
-  buttonText: { color: '#e6edf3', fontWeight: '600' },
+  buttonText: { color: '#e6edf3', ...bold },
   card: { backgroundColor: '#161b22', borderRadius: 10, padding: 12, gap: 6 },
-  cardTitle: { color: '#e6edf3', fontSize: 15, fontWeight: '600', marginTop: 8 },
+  cardTitle: { color: '#e6edf3', fontSize: 15, marginTop: 8, ...bold },
   warning: { backgroundColor: '#3d2c00', borderRadius: 8, padding: 10 },
   warningText: { color: '#e3b341', fontSize: 12, lineHeight: 17 },
   logLine: { color: '#8b949e', fontSize: 11, fontFamily: 'monospace' },

@@ -143,9 +143,14 @@ observe it. 50 unit tests, app bundles for Android.
 battery-aware sampling, the route/stop UI, then EAS Build to a signed APK. Google Play
 submission is deferred — no developer account yet.
 
+**Verified on a real device (OnePlus 5, Android 10 / API 29):** the offline queue works
+end to end. 250 readings queued to SQLite, held through a simulated outage, drained to the
+server in 100-row batches; the process was then force-stopped with 250 more queued and they
+survived the kill and drained after relaunch. 500 rows on the server, 500 distinct
+`reading_id`, **0 duplicates**. Client ids confirmed genuine UUIDv7 (version nibble 7) and
+time-ordered with no inversions, which is the property ADR-001 relies on.
+
 **Known gaps, deliberately not hidden:**
-- `SqliteOutbox` is untested. The engine is covered through the shared `OutboxStore`
-  interface, but the SQL has never run. First thing to check on a device.
 - Detection thresholds in the derivation pass are untuned guesses.
 - Derivation truncates trips straddling the window's start edge.
 - Device auto-registration is a development convenience, not authentication.

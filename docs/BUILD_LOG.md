@@ -9,6 +9,49 @@ Newest entries at the top.
 
 ---
 
+## 2026-09-12 — the queue runs on real hardware
+
+**Delegated:** getting the Android toolchain working and closing the `SqliteOutbox` gap.
+
+**Result:** the durability claims hold on a OnePlus 5 running Android 10. 250 readings
+queued to SQLite, held through a simulated outage (`remaining 250`, nothing discarded),
+drained in 100-row batches. Then the process was force-stopped with 250 more queued — they
+survived and drained after relaunch. 500 rows server-side, 500 distinct, **0 duplicates**.
+The device id in the settings table survived the kill too.
+
+Also confirmed what the unit tests could not: the client ids really are UUIDv7 (version
+nibble 7, not v4) and sort identically to `recorded_at` with zero inversions. That ordering
+is the whole reason ADR-001 chose v7.
+
+**The SDK was not what it appeared to be.** Android Studio adopted an existing Xamarin-era
+SDK at ``E:\Android\android-sdk``, which is why it carried API 15 through 28 and build-tools
+23/25. Expo SDK 57 compiles against API 36 specifically, which was absent — but Gradle
+auto-downloads a missing platform, so it arrived during the first build with no manual step.
+Deleted 17.7 GB of obsolete emulator images afterwards.
+
+**Three wrong diagnoses in a row, on one UI bug.** Bold text was clipped on device —
+"Record 250" rendered as "Record", "Drain" as "Drai". First guess: synthetic bold, fixed
+with 2px of padding. No effect. Second guess: flex shrinking squeezing the buttons, fixed
+with `flexShrink: 0`. No effect either.
+
+What finally identified it was reading the evidence properly rather than pattern-matching:
+the loss **scaled with length** (one character on "Drain", four on "Record 250") and hit
+only weights 600/700, while longer normal-weight strings like "simulate offline" were fine.
+That is synthetic bold after all — Android measures with the regular face and draws with
+widened glyphs — but it also means a fixed padding can never work, because the overflow is
+proportional. The fix is to stop the synthesis: `sans-serif-medium` is a real Android family
+with its own weight, so measurement matches rendering.
+
+Worth keeping: the first diagnosis was *correct* and the first fix was still wrong. Being
+right about the cause does not mean the obvious remedy addresses it.
+
+**Also worth noting:** every screenshot before the phone was unlocked came back blank white,
+which looked exactly like a rendering failure. It was the lockscreen — Android blanks
+`screencap` behind a secure lockscreen, and `mWakefulness=Asleep` was the giveaway. Several
+minutes went into debugging an app that was working perfectly.
+
+---
+
 ## 2026-09-05 — Phase 2 slice 1: the offline sync queue
 
 **Delegated:** Android toolchain setup, the Expo scaffold, and the durable outbox.
