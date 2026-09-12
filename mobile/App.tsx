@@ -27,6 +27,16 @@ import {
 import { v7 as uuidv7 } from 'uuid';
 
 import { HttpTransport } from './src/api/transport';
+import {
+  describeGrant,
+  getPermissionState,
+  openAppSettings,
+  requestLocationPermissions,
+  type PermissionState,
+} from './src/location/permissions';
+import { MockRoute } from './src/location/mock';
+import { getCurrentFix, isTracking, startTracking, stopTracking } from './src/location/service';
+import { FIX_COUNT_SETTING, LAST_FIX_SETTING } from './src/location/task';
 import { API_BASE_URL, API_URL_IS_FALLBACK, DEVICE_ID_SETTING } from './src/config';
 import { SqliteOutbox } from './src/queue/sqlite';
 import { SyncEngine, type SyncEvent } from './src/queue/sync';
@@ -71,10 +81,16 @@ export default function App() {
   const [networkOnline, setNetworkOnline] = useState(true);
   const [busy, setBusy] = useState(false);
   const [pollError, setPollError] = useState<string | null>(null);
+  const [permission, setPermission] = useState<PermissionState | null>(null);
+  const [tracking, setTracking] = useState(false);
+  const [lastFix, setLastFix] = useState<string | null>(null);
+  const [fixCount, setFixCount] = useState(0);
+  const [mockRunning, setMockRunning] = useState(false);
 
   const storeRef = useRef<SqliteOutbox | null>(null);
   const engineRef = useRef<SyncEngine | null>(null);
   const transportRef = useRef<ToggleableTransport | null>(null);
+  const mockRef = useRef<MockRoute | null>(null);
 
   const note = useCallback((line: string) => {
     const stamp = new Date().toLocaleTimeString();
@@ -114,6 +130,7 @@ export default function App() {
         transportRef.current = transport;
         setDeviceId(id);
         setReady(true);
+        setPermission(await getPermissionState());
         note(`ready — api ${API_BASE_URL}`);
       } catch (err) {
         if (!cancelled) setFatal(err instanceof Error ? err.message : String(err));
@@ -149,6 +166,13 @@ export default function App() {
     if (!engine) return false;
     try {
       setStatus(await engine.status());
+
+      const store = storeRef.current;
+      if (store) {
+        setLastFix(await store.getSetting(LAST_FIX_SETTING));
+        setFixCount(Number((await store.getSetting(FIX_COUNT_SETTING)) ?? '0'));
+      }
+      setTracking(await isTracking());
       return true;
     } catch (err) {
       setPollError(err instanceof Error ? err.message : String(err));
@@ -226,6 +250,77 @@ export default function App() {
       setBusy(false);
     }
   }, [note, refresh]);
+
+  const grantPermissions = useCallback(async () => {
+    setBusy(true);
+    try {
+      const state = await requestLocationPermissions();
+      setPermission(state);
+      note(`location permission: ${describeGrant(state)}`);
+    } finally {
+      setBusy(false);
+    }
+  }, [note]);
+
+  const toggleTracking = useCallback(async () => {
+    setBusy(true);
+    try {
+      if (await isTracking()) {
+        await stopTracking();
+        note('tracking stopped');
+      } else {
+        await startTracking();
+        note('tracking started');
+      }
+      setTracking(await isTracking());
+    } catch (err) {
+      note(`tracking: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setBusy(false);
+    }
+  }, [note]);
+
+  const toggleMock = useCallback(() => {
+    const existing = mockRef.current;
+    if (existing?.running) {
+      existing.stop();
+      setMockRunning(false);
+      note('mock route stopped');
+      return;
+    }
+
+    const route = new MockRoute({
+      // 2s ticks at 10x means a fix every 20 simulated seconds, so a two-minute
+      // stop - long enough for the server to derive one - takes 12 real
+      // seconds rather than two real minutes.
+      tickMs: 2000,
+      timeScale: 10,
+      onError: (message) => note(`mock: ${message}`),
+    });
+    mockRef.current = route;
+    route.start();
+    setMockRunning(true);
+    note('mock route started — synthetic fixes, not GPS');
+  }, [note]);
+
+  // Stop the generator if the screen goes away, or it keeps writing to a store
+  // the cleanup has already closed.
+  useEffect(() => () => mockRef.current?.stop(), []);
+
+  const oneShotFix = useCallback(async () => {
+    setBusy(true);
+    try {
+      const fix = await getCurrentFix();
+      note(
+        `fix ${fix.coords.latitude.toFixed(5)}, ${fix.coords.longitude.toFixed(5)}` +
+          ` (±${Math.round(fix.coords.accuracy ?? 0)}m)`,
+      );
+    } catch (err) {
+      note(`fix failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setBusy(false);
+    }
+  }, [note]);
 
   const clear = useCallback(async () => {
     await storeRef.current?.clear();
@@ -305,6 +400,68 @@ export default function App() {
         {backoffRemaining > 0 ? (
           <Text style={styles.dim}>backing off for {(backoffRemaining / 1000).toFixed(1)}s</Text>
         ) : null}
+
+        <Text style={styles.cardTitle}>location</Text>
+
+        <View style={styles.line}>
+          <Text style={styles.dim}>permission</Text>
+          <Text style={permission?.grant === 'background' ? styles.good : styles.bad}>
+            {permission ? permission.grant : '…'}
+          </Text>
+        </View>
+
+        {permission && permission.grant !== 'background' ? (
+          <View style={styles.warning}>
+            <Text style={styles.warningText}>
+              {describeGrant(permission)}
+              {permission.backgroundNeedsSettings
+                ? '. Android will not prompt for this again — it has to be changed in Settings under Permissions > Location > Allow all the time.'
+                : ''}
+            </Text>
+          </View>
+        ) : null}
+
+        <View style={styles.line}>
+          <Text style={styles.dim}>tracking</Text>
+          <Text style={tracking ? styles.good : styles.dim}>{tracking ? 'running' : 'stopped'}</Text>
+        </View>
+
+        <View style={styles.line}>
+          <Text style={styles.dim}>fixes recorded</Text>
+          <Text style={styles.mono}>{fixCount}</Text>
+        </View>
+
+        {lastFix ? <Text style={styles.mono}>{lastFix}</Text> : null}
+
+        <View style={styles.buttons}>
+          <Button label="Grant" onPress={() => void grantPermissions()} disabled={busy} />
+          {permission?.backgroundNeedsSettings ? (
+            <Button label="Settings" onPress={() => void openAppSettings()} disabled={busy} />
+          ) : null}
+          <Button
+            label={tracking ? 'Stop tracking' : 'Start tracking'}
+            onPress={() => void toggleTracking()}
+            disabled={busy || permission?.grant === 'none'}
+            primary={!tracking}
+          />
+          <Button label="One fix" onPress={() => void oneShotFix()} disabled={busy} />
+          <Button
+            label={mockRunning ? 'Stop mock' : 'Mock route'}
+            onPress={toggleMock}
+            disabled={busy}
+          />
+        </View>
+
+        {mockRunning ? (
+          <View style={styles.warning}>
+            <Text style={styles.warningText}>
+              Synthetic fixes, not GPS. This exercises the queue, the drain and the server, but
+              proves nothing about Android actually delivering location in the background.
+            </Text>
+          </View>
+        ) : null}
+
+        <Text style={styles.cardTitle}>queue</Text>
 
         <View style={styles.buttons}>
           <Button label="Record 1" onPress={() => void record(1)} disabled={busy} />

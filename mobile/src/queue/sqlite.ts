@@ -58,9 +58,17 @@ export class SqliteOutbox implements OutboxStore {
     // positions on a timer while a drain may be reading the queue, and the
     // default rollback journal would make those two block each other.
     //
+    // busy_timeout matters once background location is running: the headless
+    // task and the UI are separate writers on the same file, and WAL still
+    // serialises writers. Without a timeout the loser fails immediately with
+    // SQLITE_BUSY rather than waiting its turn — which would drop a location
+    // fix purely because the user happened to tap a button at that moment.
+    //
     // foreign_keys is off by default in SQLite and has to be asked for
     // per-connection, which is a common silent source of orphaned rows.
-    await db.execAsync('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
+    await db.execAsync(
+      'PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;',
+    );
 
     await SqliteOutbox.migrate(db);
     return new SqliteOutbox(db);
