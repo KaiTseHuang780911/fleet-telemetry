@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -401,5 +402,88 @@ func TestOnlyOneOpenTripPerVehicleAndSource(t *testing.T) {
 	}
 	if err := insertOpen("client"); err == nil {
 		t.Error("a second open client trip must be rejected by the partial unique index")
+	}
+}
+
+// Reproduces a real incident: the vehicles table was truncated while the API
+// was running, and every insert afterwards failed for three days.
+//
+// The cache had a population path and no invalidation path, so a cached id that
+// stopped being valid stayed cached forever. Inserts violated the foreign key
+// on every attempt, and because the handler had already answered 202 the
+// readings were discarded silently — indistinguishable downstream from a
+// vehicle that never moved.
+func TestVehicleCacheRecoversWhenTheVehicleRowDisappears(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	vehicleID, err := s.VehicleIDForDevice(ctx, "device-vanishing")
+	if err != nil {
+		t.Fatalf("resolve vehicle: %v", err)
+	}
+	if s.CachedVehicleCount() == 0 {
+		t.Fatal("expected the resolved id to be cached")
+	}
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	position := func() Position {
+		return Position{
+			ReadingID:  uuid.New(),
+			VehicleID:  vehicleID,
+			RecordedAt: now,
+			ReceivedAt: now,
+			Lat:        49.28,
+			Lon:        -123.12,
+		}
+	}
+
+	if _, err := s.InsertPositions(ctx, []Position{position()}); err != nil {
+		t.Fatalf("baseline insert should succeed: %v", err)
+	}
+
+	// The row goes away underneath the running process.
+	if _, err := s.pool.Exec(ctx,
+		`DELETE FROM positions WHERE vehicle_id = $1`, vehicleID); err != nil {
+		t.Fatalf("clear positions: %v", err)
+	}
+	if _, err := s.pool.Exec(ctx, `DELETE FROM vehicles WHERE id = $1`, vehicleID); err != nil {
+		t.Fatalf("delete vehicle: %v", err)
+	}
+
+	// The next insert still carries the stale id, so it must fail — but it must
+	// fail in a way that clears the cache rather than poisoning the process.
+	_, err = s.InsertPositions(ctx, []Position{position()})
+	if err == nil {
+		t.Fatal("expected the insert to fail against a deleted vehicle")
+	}
+	if !errors.Is(err, ErrStaleVehicleCache) {
+		t.Fatalf("expected ErrStaleVehicleCache, got: %v", err)
+	}
+	if n := s.CachedVehicleCount(); n != 0 {
+		t.Errorf("cache still holds %d entries; it should have been invalidated", n)
+	}
+
+	// The recovery that matters: re-resolving gets a new id, and writing works
+	// again. Before the fix this stayed broken until the process restarted.
+	fresh, err := s.VehicleIDForDevice(ctx, "device-vanishing")
+	if err != nil {
+		t.Fatalf("re-resolve: %v", err)
+	}
+	if fresh == vehicleID {
+		t.Error("expected a new vehicle id after the old row was deleted")
+	}
+
+	p := position()
+	p.VehicleID = fresh
+	if _, err := s.InsertPositions(ctx, []Position{p}); err != nil {
+		t.Fatalf("insert after recovery should succeed: %v", err)
+	}
+
+	count, err := s.CountPositions(ctx)
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 position after recovery, got %d", count)
 	}
 }

@@ -2,11 +2,20 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 )
+
+// ErrStaleVehicleCache reports that an insert referenced a vehicle row that no
+// longer exists, so the cached mapping was wrong and has been dropped.
+//
+// Surfaced as a distinct error because the caller's response differs: this one
+// is self-healing on the next batch, whereas a connection failure is not.
+var ErrStaleVehicleCache = errors.New("vehicle cache was stale; it has been invalidated")
 
 // Position is one row destined for the positions table, with the vehicle
 // already resolved and the server's receive time already stamped.
@@ -94,6 +103,19 @@ func (s *Store) InsertPositions(ctx context.Context, positions []Position) (int,
 		lats, lons, speeds, headings, accuracies, batteries, motionStates,
 	)
 	if err != nil {
+		// A foreign-key violation here means the vehicle_id these rows carry no
+		// longer exists, which can only happen if the row was removed after the
+		// id was cached. Dropping the cache lets the next batch re-resolve and
+		// succeed instead of failing identically forever.
+		//
+		// 23503 is Postgres' foreign_key_violation. Matching on the code rather
+		// than the message text because messages are localised and change
+		// between versions.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+			s.InvalidateVehicleCache()
+			return 0, fmt.Errorf("insert %d positions: %w: %v", n, ErrStaleVehicleCache, err)
+		}
 		return 0, fmt.Errorf("insert %d positions: %w", n, err)
 	}
 

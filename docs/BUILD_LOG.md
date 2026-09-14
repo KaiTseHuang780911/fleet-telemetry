@@ -9,6 +9,46 @@ Newest entries at the top.
 
 ---
 
+## 2026-09-14 — a cache with no invalidation path, found by accident
+
+**Found by the user**, not by a test: the simulator had been logging "post failed" for three
+days. The API was healthy, `/healthz` was green, and every POST returned **202 Accepted**.
+The rows were never stored.
+
+`/readyz` told the real story: **enqueued 5,780,070, inserted 771,690, failures 13,128**,
+against a table holding 601 rows.
+
+**Cause.** During phone testing the `vehicles` table was truncated with CASCADE while the
+API process kept running. The API caches `external_id -> vehicle_id` in memory and had a
+population path but **no invalidation path**, so it went on handing out ids for rows that no
+longer existed. Every insert violated the foreign key, the whole flush failed, and it
+retried identically forever.
+
+**Why it is worse than a failed write.** The handler answers 202 as soon as the batch is
+buffered, so the client deleted its only copy. ADR-003 accepted that a *crash* between 202
+and the flush loses a batch. It did not anticipate a *persistent* error discarding
+everything, indefinitely, while continuing to report success. That is the silent loss the
+same ADR calls the worst failure mode this system has — and it ran for three days without
+anything noticing.
+
+**Fix.** A foreign-key violation (Postgres 23503, matched on the code rather than the
+message, since messages are localised) now invalidates the cache and returns a distinct
+`ErrStaleVehicleCache`. The batch in flight is still lost, but the next one re-resolves and
+succeeds instead of the process being poisoned until restart. Regression test reproduces the
+exact sequence: resolve, delete the row underneath, assert the insert fails *and* clears the
+cache, then assert recovery.
+
+**What this says about the test suite.** Every unit test passed throughout. The integration
+tests passed too — because `testStore` truncates *and* resets the cache before each test,
+which is precisely the step production has no equivalent of. The harness was quietly
+papering over the bug it should have caught. Worth remembering: a fixture that resets state
+the real system cannot reset is a fixture that hides this class of defect.
+
+**Also a design note worth keeping:** the cache was a premature optimisation. It saves one
+indexed lookup per batch and bought a correctness bug in exchange.
+
+---
+
 ## 2026-09-12 — the queue runs on real hardware
 
 **Delegated:** getting the Android toolchain working and closing the `SqliteOutbox` gap.

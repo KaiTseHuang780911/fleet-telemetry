@@ -54,3 +54,29 @@ func (s *Store) VehicleIDForDevice(ctx context.Context, externalID string) (uuid
 
 	return id, nil
 }
+
+// InvalidateVehicleCache drops every cached external_id -> vehicle_id mapping.
+//
+// This exists because the cache previously had a population path and no
+// invalidation path, which is a correctness bug rather than a missing feature.
+// If a vehicle row disappears while the process is running -- a manual DELETE,
+// a TRUNCATE during testing, a restore from backup -- every cached id becomes a
+// dangling reference. Inserts then fail their foreign key forever, and because
+// the handler has already answered 202 the data is discarded silently. That is
+// the worst failure mode this system has: indistinguishable, downstream, from a
+// vehicle that never moved.
+//
+// Clearing wholesale rather than evicting one key: a truncate takes every row,
+// and the cache is small enough that repopulating it costs one query per device.
+func (s *Store) InvalidateVehicleCache() {
+	s.vehicles.mu.Lock()
+	s.vehicles.m = make(map[string]uuid.UUID)
+	s.vehicles.mu.Unlock()
+}
+
+// CachedVehicleCount reports how many mappings are held. Used by tests.
+func (s *Store) CachedVehicleCount() int {
+	s.vehicles.mu.RLock()
+	defer s.vehicles.mu.RUnlock()
+	return len(s.vehicles.m)
+}
