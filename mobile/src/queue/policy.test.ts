@@ -111,7 +111,7 @@ describe('planForOutcome', () => {
     expect(plan.retryAfterMs).toBe(2000);
   });
 
-  it('retries transient failures below the attempt limit', () => {
+  it('retries a network failure and keeps everything queued', () => {
     const batch = [item('a', 0), item('b', 1)];
     const plan = planForOutcome(
       batch,
@@ -124,11 +124,31 @@ describe('planForOutcome', () => {
     expect(plan.error).toBe('network down');
   });
 
-  it('quarantines items once this failure reaches the attempt limit', () => {
-    const batch = [item('fresh', 0), item('tired', 4)];
+  // The attempt limit deliberately does not apply here, and this test used to
+  // assert the opposite. Being out of coverage is not the reading's fault: with
+  // a drain every ten seconds, counting outages against the limit quarantined
+  // the oldest readings under a minute into any outage, and quarantined data
+  // never uploads even once signal returns.
+  it('never quarantines on a network failure, however many attempts have been made', () => {
+    const batch = [item('fresh', 0), item('tired', 4), item('ancient', 999)];
     const plan = planForOutcome(
       batch,
       { kind: 'unavailable', reason: 'network down' },
+      { maxAttempts: 5 },
+    );
+
+    expect(plan.quarantineIds).toEqual([]);
+    expect(plan.failIds.sort()).toEqual(['ancient', 'fresh', 'tired']);
+  });
+
+  // Where the limit does belong: the server called the request malformed, so
+  // retrying identical bytes cannot help and the item would otherwise block
+  // everything behind it forever.
+  it('quarantines a malformed request once it reaches the attempt limit', () => {
+    const batch = [item('fresh', 0), item('tired', 4)];
+    const plan = planForOutcome(
+      batch,
+      { kind: 'rejected', reason: 'HTTP 400: malformed batch' },
       { maxAttempts: 5 },
     );
 

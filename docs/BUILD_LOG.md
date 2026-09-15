@@ -9,6 +9,42 @@ Newest entries at the top.
 
 ---
 
+## 2026-09-14 (later) — a question caught the bug that would have ruined the field test
+
+**Found by the user asking a question**, before any code ran: *"my phone won't have internet
+if I leave the house — the app handles going offline and uploads later, right?"*
+
+It would not have. `unavailable` (network failure) counted against `maxAttempts: 5`, exactly
+like `rejected` (a malformed request). With the background task draining every ten seconds,
+readings hit five failed attempts about **fifty seconds** into any outage and were
+quarantined into the dead-letter table — where they stay. A thirty-minute walk would have
+lost nearly everything, and **would never have uploaded it on returning to coverage**.
+
+The reasoning error is specific and worth keeping. `503` was correctly exempted from the
+attempt count, on the grounds that a busy server is not the reading's fault. Being out of
+coverage is not the reading's fault either — but it got filed with "malformed request", the
+one case where retrying genuinely cannot help. Two environmental conditions, treated
+differently for no reason.
+
+Now only `rejected` burns attempts. Unbounded growth during a long outage is bounded by
+`maxQueueSize` instead, which drops the *oldest* and reports it: lose the stalest data
+loudly rather than the freshest quietly.
+
+**Three existing tests failed on the fix — and they were right to.** Each asserted that a
+network failure quarantines after five attempts. They had encoded the bug as a requirement,
+which is worth noticing as its own failure mode: a test can pin a defect in place and make
+removing it look like a regression. Rewritten against `rejected`, where quarantine belongs.
+
+**Verified by reintroducing the bug**, as is now the habit here. The new long-outage tests
+failed with exactly the right numbers: `Expected: 0 dead, Received: 30` and `Expected: 30
+queued, Received: 0`. That is the walk, in two assertions.
+
+Worth sitting with: the offline queue is the centrepiece of this phase, it had 50 passing
+tests, it had been verified on a real device — and it could not survive the one scenario it
+exists for. None of the existing tests simulated an outage longer than a few attempts.
+
+---
+
 ## 2026-09-14 — tests for the class of bug, not just the bug
 
 **Delegated:** write tests so a defect of this shape gets caught next time.

@@ -70,10 +70,18 @@ export interface SyncConfig {
   /** Rows per request. Bounded by the server's MaxReadingsPerBatch. */
   batchSize: number;
   /**
-   * Attempts before an item is quarantined. Without a limit, one permanently
-   * unacceptable row blocks every row behind it forever — the same
+   * Attempts before an item is quarantined.
+   *
+   * Applies only to `rejected` — a request the server refused as malformed,
+   * where retrying identical bytes cannot help. Without a limit, one
+   * permanently unacceptable row blocks every row behind it forever: the same
    * poison-message failure the server guards against, at the other end of the
    * wire.
+   *
+   * Deliberately does NOT apply to `unavailable` or `shed`. Both are
+   * environmental and both resolve on their own, so counting them would
+   * quarantine perfectly good readings for the crime of being recorded during
+   * an outage. Queue growth in those cases is bounded by maxQueueSize instead.
    */
   maxAttempts: number;
   /** Queue size cap. Past this, the oldest rows are dropped and counted. */

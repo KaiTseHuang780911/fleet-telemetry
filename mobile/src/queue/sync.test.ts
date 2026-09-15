@@ -20,6 +20,11 @@ class FakeTransport implements Transport {
     return this;
   }
 
+  /** Discards any queued outcomes, so send() falls back to accepting. */
+  drainQueuedOutcomes(): void {
+    this.outcomes = [];
+  }
+
   async send(_deviceId: string, items: OutboxItem[]): Promise<SendOutcome> {
     this.sent.push(items);
 
@@ -204,9 +209,13 @@ describe('failure handling', () => {
     expect(await engine.ready(true)).toBe(true);
   });
 
-  it('quarantines an item after the attempt limit so the queue can drain', async () => {
+  // Uses `rejected`, not `unavailable`. A network failure is never quarantined
+  // — see the long-outage tests below for why.
+  it('quarantines a rejected item after the attempt limit so the queue can drain', async () => {
     const transport = new FakeTransport();
-    for (let i = 0; i < 3; i++) transport.queue({ kind: 'unavailable', reason: 'network down' });
+    for (let i = 0; i < 3; i++) {
+      transport.queue({ kind: 'rejected', reason: 'HTTP 400: malformed batch' });
+    }
 
     const { engine, store, advance, events } = makeEngine(
       { maxAttempts: 3, baseBackoffMs: 1 },
@@ -229,7 +238,9 @@ describe('failure handling', () => {
   // A stuck item must not hold up everything behind it.
   it('lets later items through once a poison item is quarantined', async () => {
     const transport = new FakeTransport();
-    for (let i = 0; i < 2; i++) transport.queue({ kind: 'unavailable', reason: 'boom' });
+    for (let i = 0; i < 2; i++) {
+      transport.queue({ kind: 'rejected', reason: 'HTTP 400: malformed batch' });
+    }
 
     const { engine, store, advance } = makeEngine(
       { maxAttempts: 2, batchSize: 1, baseBackoffMs: 1 },
@@ -354,5 +365,116 @@ describe('status', () => {
     expect(status.draining).toBe(false);
     expect(status.consecutiveFailures).toBe(1);
     expect(status.nextAttemptAt).toBeGreaterThan(clockNow() - 1);
+  });
+});
+
+// The scenario this queue exists for: a driver leaves coverage, keeps
+// recording for a long time, and comes back.
+//
+// Written after a real near-miss. `unavailable` originally counted against
+// maxAttempts, the same as a malformed request. With the background task
+// draining every ten seconds, that quarantined the oldest readings about fifty
+// seconds into any outage — and quarantined data never uploads, even once
+// signal returns. A thirty-minute walk would have lost nearly all of it, and
+// the queue would have looked healthy the whole time.
+describe('a long outage', () => {
+  function offlineTransport() {
+    const t = new FakeTransport();
+    for (let i = 0; i < 500; i++) {
+      t.queue({ kind: 'unavailable', reason: 'Network request failed' });
+    }
+    return t;
+  }
+
+  it('never quarantines readings, however long the outage lasts', async () => {
+    const transport = offlineTransport();
+    const { engine, store, advance } = makeEngine(
+      { maxAttempts: 5, batchSize: 10, baseBackoffMs: 1 },
+      { transport },
+    );
+
+    await engine.enqueue(Array.from({ length: 30 }, () => makeItem()));
+
+    // 200 drain attempts is a bit over half an hour at a ten-second cadence.
+    for (let i = 0; i < 200; i++) {
+      await engine.drain();
+      advance(1000);
+    }
+
+    expect(await store.deadCount()).toBe(0);
+    expect(await store.count()).toBe(30);
+  });
+
+  it('uploads everything once coverage returns', async () => {
+    const transport = offlineTransport();
+    const { engine, store, advance } = makeEngine(
+      { maxAttempts: 5, batchSize: 10, baseBackoffMs: 1 },
+      { transport },
+    );
+
+    // Record while offline, in bursts, as a device on a route would.
+    for (let burst = 0; burst < 3; burst++) {
+      await engine.enqueue(Array.from({ length: 10 }, () => makeItem()));
+      for (let i = 0; i < 20; i++) {
+        await engine.drain();
+        advance(1000);
+      }
+    }
+    expect(await store.count()).toBe(30);
+    expect(await store.deadCount()).toBe(0);
+
+    // Back in range: the queued outcomes run out, so the fake starts accepting.
+    transport.drainQueuedOutcomes();
+
+    for (let i = 0; i < 5; i++) {
+      await engine.drain();
+      advance(1000);
+    }
+
+    expect(await store.count()).toBe(0);
+    expect(await store.deadCount()).toBe(0);
+  });
+
+  // The limit still applies where it belongs: a request the server refuses as
+  // malformed will never succeed, so it must not block the queue forever.
+  it('still quarantines a request the server rejects as malformed', async () => {
+    const transport = new FakeTransport();
+    for (let i = 0; i < 10; i++) {
+      transport.queue({ kind: 'rejected', reason: 'HTTP 400: malformed batch' });
+    }
+
+    const { engine, store, advance } = makeEngine(
+      { maxAttempts: 3, batchSize: 10, baseBackoffMs: 1 },
+      { transport },
+    );
+    await engine.enqueue(Array.from({ length: 5 }, () => makeItem()));
+
+    for (let i = 0; i < 5; i++) {
+      await engine.drain();
+      advance(1000);
+    }
+
+    expect(await store.deadCount()).toBe(5);
+    expect(await store.count()).toBe(0);
+  });
+
+  // An outage longer than the queue can hold must lose the OLDEST data, and say
+  // so — not the newest, and not silently.
+  it('drops the stalest readings at the cap rather than the freshest', async () => {
+    const transport = offlineTransport();
+    const { engine, store, events } = makeEngine(
+      { maxQueueSize: 20, batchSize: 10, baseBackoffMs: 1 },
+      { transport },
+    );
+
+    const all = Array.from({ length: 50 }, () => makeItem());
+    for (const item of all) await engine.enqueue([item]);
+
+    expect(await store.count()).toBe(20);
+    const remaining = (await store.peek(50)).map((i) => i.id);
+    expect(remaining).toEqual(all.slice(30).map((i) => i.id));
+
+    const dropped = events.filter((e) => e.type === 'dropped');
+    expect(dropped.length).toBeGreaterThan(0);
   });
 });

@@ -111,15 +111,28 @@ export function planForOutcome(
       };
     }
 
-    case 'unavailable': {
-      const { toFail, toQuarantine } = splitByAttempts(batch, cfg.maxAttempts);
+    case 'unavailable':
+      // Never quarantined, however long this lasts.
+      //
+      // Being out of coverage is not the reading's fault, any more than the
+      // server being busy is. A driver on a rural route can be offline for an
+      // hour; with the background task draining every ten seconds that is
+      // hundreds of failed attempts, and counting them would shunt the entire
+      // shift into the dead-letter table within the first minute — data that
+      // would then never upload even once signal returned. That defeats the
+      // whole point of an offline-first queue.
+      //
+      // Unbounded growth is bounded by maxQueueSize instead, which drops the
+      // oldest and reports it. That is the right mechanism for "offline for a
+      // week": lose the stalest data, loudly, rather than the freshest, quietly.
+      //
+      // attempts still increments, because it is useful diagnostics — it just
+      // no longer decides anything.
       return {
         ...empty,
-        failIds: toFail,
-        quarantineIds: toQuarantine,
+        failIds: batch.map((item) => item.id),
         error: outcome.reason,
       };
-    }
   }
 }
 
