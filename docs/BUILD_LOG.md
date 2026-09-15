@@ -9,6 +9,47 @@ Newest entries at the top.
 
 ---
 
+## 2026-09-14 — tests for the class of bug, not just the bug
+
+**Delegated:** write tests so a defect of this shape gets caught next time.
+
+**The shape worth guarding**, rather than "vehicles were deleted": **in-memory state that
+outlives the thing it describes, with no path back** — and a failure that reports success.
+
+Nine tests added across two levels.
+
+`store/cache_test.go` covers the cache lifecycle: recovery from a TRUNCATE under a live
+process, invalidation clearing *every* device rather than only the one that failed, the
+inverse guard that a non-foreign-key error must **not** wipe the cache (over-invalidating
+would be a quieter bug — a working but slow system is far harder to trace than an outright
+failure), and concurrent resolve/invalidate under `-race`.
+
+`api/pipeline_integration_test.go` is the one that matters. It is the first test spanning
+handler → writer → store → live Postgres, and it asserts the invariant that actually broke:
+**if the API answers 202, that data must reach the database.** Any cause — a stale cache, an
+unanticipated constraint, a writer that drops on error — fails it.
+
+**Proved the tests fail without the fix**, rather than assuming. Reverting the invalidation
+produced exactly the right diagnosis: *"the server never recovered: 0 rows after a further
+10 were accepted. This is the three-day silent-loss failure returning."* Given this project
+has now produced a green result from a test that could not fail three separate times, a new
+test is not finished until it has been seen red.
+
+**Which immediately exposed a second defect, this time in the test setup.** The new suite
+passed alone and failed under `go test ./...`. Not flakiness: packages run in parallel, and
+the store suite and the pipeline suite both pointed at `fleet_test` and truncated it —
+deleting each other's rows mid-run. Fixed by giving the pipeline tests their own database
+rather than reaching for `-p 1`, which removes the shared state instead of depending on
+whoever remembers the flag.
+
+**Also changed the fixture to stop hiding things.** `testStore` now clears the cache through
+the production `InvalidateVehicleCache` rather than swapping the field behind its back, so
+the suite notices if that path ever breaks. `TruncateAll` deliberately does **not** invalidate
+the cache — production has no such hook, and a helper that tidies up after itself would
+recreate exactly the blind spot that let this run for three days.
+
+---
+
 ## 2026-09-14 — a cache with no invalidation path, found by accident
 
 **Found by the user**, not by a test: the simulator had been logging "post failed" for three

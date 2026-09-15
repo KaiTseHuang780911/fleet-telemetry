@@ -62,6 +62,9 @@ jobs:
       - name: Create the test database
         run: |
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE fleet_test OWNER fleet'
+          # A third database so the store suite and the end-to-end pipeline
+          # suite do not truncate each other while packages run in parallel.
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE fleet_pipeline_test OWNER fleet'
 
       - name: Check formatting
         run: |

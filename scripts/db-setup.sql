@@ -25,4 +25,13 @@ SELECT 'CREATE DATABASE fleet OWNER fleet'
 SELECT 'CREATE DATABASE fleet_test OWNER fleet'
  WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'fleet_test')\gexec
 
-\echo 'Databases ready: fleet, fleet_test (owner: fleet)'
+-- A third database purely so the store tests and the end-to-end pipeline tests
+-- do not share one. `go test ./...` runs packages in parallel, and both suites
+-- truncate; pointed at the same database they delete each other's rows mid-run
+-- and fail in ways that look like flakiness. Separate databases remove the
+-- shared state rather than papering over it with `-p 1`, which only works for
+-- whoever remembers the flag.
+SELECT 'CREATE DATABASE fleet_pipeline_test OWNER fleet'
+ WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'fleet_pipeline_test')\gexec
+
+\echo 'Databases ready: fleet, fleet_test, fleet_pipeline_test (owner: fleet)'

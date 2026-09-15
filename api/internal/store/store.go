@@ -61,6 +61,23 @@ func (s *Store) Close() {
 	}
 }
 
+// TruncateAll empties every table. For tests and local development only.
+//
+// Deliberately does NOT invalidate the vehicle cache, even though truncating
+// makes every cached id dangling. That omission is the point: production has no
+// hook that fires when rows vanish, so a test which tidied up after itself here
+// would be testing a world the real system does not live in — which is exactly
+// how a three-day outage went unnoticed by a green suite. Recovery has to come
+// from the production path or not at all.
+func (s *Store) TruncateAll(ctx context.Context) error {
+	_, err := s.pool.Exec(ctx,
+		`TRUNCATE positions, stop_event_matches, stop_events, trips, vehicles RESTART IDENTITY CASCADE`)
+	if err != nil {
+		return fmt.Errorf("truncate all: %w", err)
+	}
+	return nil
+}
+
 // Ping backs the readiness probe.
 func (s *Store) Ping(ctx context.Context) error {
 	return s.pool.Ping(ctx)

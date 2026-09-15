@@ -72,10 +72,19 @@ func testStore(t *testing.T) *Store {
 		t.Fatalf("truncate: %v", err)
 	}
 
-	// The vehicle cache outlives the truncate, so it would hand back ids for
-	// rows that no longer exist. Resetting it keeps each test genuinely
-	// independent.
-	shared.vehicles = newVehicleCache()
+	// The cache outlives the truncate and would hand back ids for rows that no
+	// longer exist, so each test starts from a clean one.
+	//
+	// Via the production method rather than by swapping the field: a fixture
+	// that reaches past the code under test can keep passing while that code
+	// rots. Using InvalidateVehicleCache here means the suite would notice if it
+	// ever stopped working.
+	//
+	// Note what this convenience costs, because it has already cost something.
+	// Production has no equivalent hook, so tests that rely on this reset are
+	// testing a world the real system does not live in. cache_test.go contains
+	// cases that deliberately refuse this help.
+	shared.InvalidateVehicleCache()
 
 	return shared
 }
