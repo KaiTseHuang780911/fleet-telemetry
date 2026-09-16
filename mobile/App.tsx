@@ -12,6 +12,7 @@
 import 'react-native-get-random-values';
 
 import NetInfo from '@react-native-community/netinfo';
+import { AppState } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -38,6 +39,11 @@ import { MockRoute } from './src/location/mock';
 import { getCurrentFix, isTracking, startTracking, stopTracking } from './src/location/service';
 import { FIX_COUNT_SETTING, LAST_FIX_SETTING } from './src/location/task';
 import { API_BASE_URL, API_URL_IS_FALLBACK, DEVICE_ID_SETTING } from './src/config';
+import {
+  PERIODIC_DRAIN_MS,
+  shouldAutoDrain,
+  type DrainTrigger,
+} from './src/queue/autodrain';
 import { SqliteOutbox } from './src/queue/sqlite';
 import { SyncEngine, type SyncEvent } from './src/queue/sync';
 import {
@@ -91,6 +97,9 @@ export default function App() {
   const engineRef = useRef<SyncEngine | null>(null);
   const transportRef = useRef<ToggleableTransport | null>(null);
   const mockRef = useRef<MockRoute | null>(null);
+  // Read by the drain triggers. A ref rather than the state value because an
+  // effect that closes over state sees whatever it was when the effect ran.
+  const onlineRef = useRef(true);
 
   const note = useCallback((line: string) => {
     const stamp = new Date().toLocaleTimeString();
@@ -151,13 +160,6 @@ export default function App() {
       void store?.close();
     };
   }, [note]);
-
-  // Real connectivity, distinct from the simulated toggle above.
-  useEffect(() => NetInfo.addEventListener((s) => setNetworkOnline(Boolean(s.isConnected))), []);
-
-  useEffect(() => {
-    if (transportRef.current) transportRef.current.online = !simulateOffline;
-  }, [simulateOffline]);
 
   // Returns false when the store is no longer usable, so the caller can stop
   // polling instead of producing one unhandled rejection per second.
@@ -229,27 +231,97 @@ export default function App() {
     [note, refresh],
   );
 
-  const drain = useCallback(async () => {
-    const engine = engineRef.current;
-    if (!engine) return;
-    setBusy(true);
-    try {
-      const result = await engine.drain();
-      setLastDrain(result);
-      note(
-        result.sent === 0
-          ? 'drain: nothing queued'
-          : `drain: sent ${result.sent}, accepted ${result.accepted}` +
-              (result.rejected ? `, rejected ${result.rejected}` : '') +
-              (result.error ? ` — ${result.error}` : ''),
-      );
-      await refresh();
-    } catch (err) {
-      note(`drain threw: ${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setBusy(false);
-    }
-  }, [note, refresh]);
+  const runDrain = useCallback(
+    async (trigger: DrainTrigger) => {
+      const engine = engineRef.current;
+      if (!engine) return;
+
+      // Consult the schedule for everything except an explicit tap. This is the
+      // wiring that was missing: the rules existed and were tested, but nothing
+      // ever asked them.
+      if (trigger !== 'manual') {
+        const status = await engine.status();
+        const allowed = shouldAutoDrain(trigger, {
+          online: onlineRef.current,
+          active: AppState.currentState === 'active',
+          queueDepth: status.depth,
+          draining: status.draining,
+          nextAttemptAt: status.nextAttemptAt,
+          now: Date.now(),
+        });
+        if (!allowed) return;
+      }
+
+      if (trigger === 'manual') setBusy(true);
+      try {
+        const result = await engine.drain();
+        setLastDrain(result);
+        note(
+          result.sent === 0
+            ? `drain (${trigger}): nothing queued`
+            : `drain (${trigger}): sent ${result.sent}, accepted ${result.accepted}` +
+                (result.rejected ? `, rejected ${result.rejected}` : '') +
+                (result.error ? ` — ${result.error}` : ''),
+        );
+        await refresh();
+      } catch (err) {
+        note(`drain threw: ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        if (trigger === 'manual') setBusy(false);
+      }
+    },
+    [note, refresh],
+  );
+
+  const drain = useCallback(() => runDrain('manual'), [runDrain]);
+
+  // Real connectivity, distinct from the simulated toggle above.
+  //
+  // This listener used to do nothing but colour a label. Coming back into
+  // coverage is the single most likely moment for a queued upload to succeed,
+  // and it was going unused — so a queue filled while offline waited for a GPS
+  // fix or a button press that might never come.
+  useEffect(() => {
+    return NetInfo.addEventListener((state) => {
+      const online = Boolean(state.isConnected);
+      const wasOffline = !onlineRef.current;
+      onlineRef.current = online;
+      setNetworkOnline(online);
+
+      if (online && wasOffline) {
+        note('back online — draining');
+        void runDrain('reconnect');
+      }
+    });
+  }, [note, runDrain]);
+
+  // Trigger 2: the app coming to the foreground. A user who opens the app
+  // expecting to see the queue clear should see it clear.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') void runDrain('foreground');
+    });
+    return () => sub.remove();
+  }, [runDrain]);
+
+  // Trigger 3: a periodic sweep while the app is open, as a backstop for a
+  // missed connectivity event. Gated by shouldAutoDrain, so an empty queue or a
+  // device that believes it is offline costs nothing.
+  useEffect(() => {
+    if (!ready) return;
+    // One immediately: the app may be opening after a long offline stretch with
+    // a full queue, and nothing else would trigger a send until a fix arrived.
+    void runDrain('foreground');
+    const timer = setInterval(() => void runDrain('periodic'), PERIODIC_DRAIN_MS);
+    return () => clearInterval(timer);
+  }, [ready, runDrain]);
+
+  useEffect(() => {
+    if (transportRef.current) transportRef.current.online = !simulateOffline;
+  }, [simulateOffline]);
+
+  // Returns false when the store is no longer usable, so the caller can stop
+  // polling instead of producing one unhandled rejection per second.
 
   const grantPermissions = useCallback(async () => {
     setBusy(true);
