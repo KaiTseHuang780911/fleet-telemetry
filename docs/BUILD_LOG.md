@@ -9,6 +9,62 @@ Newest entries at the top.
 
 ---
 
+## 2026-09-15 — two bugs, and a walk that recorded nothing
+
+**Delegated:** build a release APK so the app runs without Metro, then verify the offline
+queue over a real 40-minute walk with no coverage.
+
+**Bug one — cleartext.** Every drain failed with `java.net.UnknownServiceException:
+CLEARTEXT communication to 192.168.1.68 not permitted by network security policy`. Android
+has blocked plain HTTP by default since API 28; Expo's *debug* builds inject
+`usesCleartextTraffic="true"` and release builds do not. So the first artifact built to run
+standalone was also the first one that could not reach the dev server — a difference between
+build types that no amount of testing on the debug build would have surfaced. I built that
+APK and called it ready without checking that a release manifest still permits the transport
+`EXPO_PUBLIC_API_URL` is configured to use.
+
+**Bug two — the walk recorded zero fixes, and the UI said it was working.** The phone's
+master Location toggle was off (`settings get secure location_mode` → `0`). Both runtime
+permissions were granted, the foreground service was running, and the debug screen showed
+`tracking: running` in green for the entire walk. It could not have been true.
+`hasStartedLocationUpdatesAsync` answers "is a task registered", not "can this device
+produce a fix", and the app treats the first as if it were the second. Nothing in the code
+is wrong; the *reporting* is, and a status indicator that reads green through a total
+failure is worse than no indicator. `Location.hasServicesEnabledAsync()` is the missing
+check.
+
+**What I got wrong, and how.** Seeing `remaining 151` after `sent 100 · accepted 0`, I
+announced the walk data was safe on the phone. Both halves were wrong. `sent 100` is the
+batch size, so the queue held 151 items, not 251 — and when those 151 finally drained they
+were all stamped `2026-09-12 01:49`, spanning **24 milliseconds**, with `accuracy_m` null:
+the `Record 250` debug button, not a walk. I read a queue depth and asserted what was in it
+without looking. The check that settled it took one query, and I should have run it before
+saying anything.
+
+**What did hold up.** Once cleartext was fixed, 151 readings uploaded **without Drain being
+touched** — the `foreground` trigger fired on launch. `duplicates 0`, `failures 0`,
+`quarantined 0`, `dropped 0`. Through a total transport failure and a reinstall, the queue
+lost nothing. That is the outbox and the auto-drain wiring both working end to end; the
+walk just never put anything into them.
+
+**A limitation this exposed:** `shouldAutoDrain` requires `active` for the `periodic`
+trigger, so a backgrounded app never drains on the timer. Draining then depends on the
+location task's own post-record drain — which is fine while fixes are arriving and is
+nothing at all while they are not.
+
+**Verified, not assumed:** `prebuild --clean` regenerates `android/` wholesale, so the debug
+keystore was hashed before and after (identical) to confirm the new APK would install with
+`-r` rather than needing an uninstall, which would have wiped the SQLite queue. The cleartext
+flag was checked in the *packaged* manifest, not the source one, since merging is what
+decides. The clean also deletes `local.properties`, where the SDK path lives — the first
+build failed on it.
+
+**Still development-only:** `usesCleartextTraffic` permits plaintext to any host. Before
+anything ships: TLS on the API, a real release keystore (release currently signs with the
+debug one), and this flag deleted rather than narrowed.
+
+---
+
 ## 2026-09-14 (later) — a question caught the bug that would have ruined the field test
 
 **Found by the user asking a question**, before any code ran: *"my phone won't have internet
