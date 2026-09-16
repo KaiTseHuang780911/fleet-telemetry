@@ -55,6 +55,19 @@ export async function isTracking(): Promise<boolean> {
 }
 
 /**
+ * Whether the device's master location switch is on.
+ *
+ * Distinct from permissions, and the distinction is not academic: an app can
+ * hold both location grants, register its task, and run its foreground service
+ * while this is false — in which case Android delivers nothing, silently and
+ * forever. A 40-minute walk was recorded that way, with the debug screen
+ * showing "running" throughout. `isTracking()` alone cannot see it.
+ */
+export async function servicesEnabled(): Promise<boolean> {
+  return Location.hasServicesEnabledAsync();
+}
+
+/**
  * Starts location updates.
  *
  * Safe to call when already running: expo would otherwise stack registrations,

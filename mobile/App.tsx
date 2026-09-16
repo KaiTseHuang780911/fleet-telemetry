@@ -14,7 +14,7 @@ import 'react-native-get-random-values';
 import NetInfo from '@react-native-community/netinfo';
 import { AppState } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Platform,
@@ -36,7 +36,19 @@ import {
   type PermissionState,
 } from './src/location/permissions';
 import { MockRoute } from './src/location/mock';
-import { getCurrentFix, isTracking, startTracking, stopTracking } from './src/location/service';
+import {
+  getCurrentFix,
+  isTracking,
+  servicesEnabled,
+  startTracking,
+  stopTracking,
+} from './src/location/service';
+import {
+  isHealthy,
+  needsUserAction,
+  trackingLabel,
+  trackingState,
+} from './src/location/status';
 import { FIX_COUNT_SETTING, LAST_FIX_SETTING } from './src/location/task';
 import { API_BASE_URL, API_URL_IS_FALLBACK, DEVICE_ID_SETTING } from './src/config';
 import {
@@ -89,6 +101,10 @@ export default function App() {
   const [pollError, setPollError] = useState<string | null>(null);
   const [permission, setPermission] = useState<PermissionState | null>(null);
   const [tracking, setTracking] = useState(false);
+  // The device's master location switch, polled alongside everything else.
+  // Optimistic until the first poll answers, so the screen does not flash a
+  // "location off" warning during startup.
+  const [locationOn, setLocationOn] = useState(true);
   const [lastFix, setLastFix] = useState<string | null>(null);
   const [fixCount, setFixCount] = useState(0);
   const [mockRunning, setMockRunning] = useState(false);
@@ -175,6 +191,7 @@ export default function App() {
         setFixCount(Number((await store.getSetting(FIX_COUNT_SETTING)) ?? '0'));
       }
       setTracking(await isTracking());
+      setLocationOn(await servicesEnabled());
       return true;
     } catch (err) {
       setPollError(err instanceof Error ? err.message : String(err));
@@ -342,7 +359,16 @@ export default function App() {
         note('tracking stopped');
       } else {
         await startTracking();
-        note('tracking started');
+        // Checked after starting, not before: Android may show its own
+        // "turn on location?" dialog during the call, so asking first would
+        // report a state the user has just changed.
+        const on = await servicesEnabled();
+        setLocationOn(on);
+        note(
+          on
+            ? 'tracking started'
+            : 'tracking started but device location is OFF — no fix will arrive',
+        );
       }
       setTracking(await isTracking());
     } catch (err) {
@@ -400,6 +426,36 @@ export default function App() {
     note('cleared queue and quarantine');
     await refresh();
   }, [note, refresh]);
+
+  // When the last fix was recorded, or null if there has never been one.
+  //
+  // Parsed defensively: this string comes from SQLite, written by a previous
+  // version of the app as often as by this one, so a shape change must degrade
+  // to "no fix yet" rather than crash the screen that exists to diagnose
+  // problems.
+  //
+  // Above the early returns because it is a hook: React requires the same hooks
+  // to run in the same order on every render, and a useMemo below `if (fatal)`
+  // would be skipped on the render where it matters least and present on every
+  // other one.
+  const lastFixAt = useMemo(() => {
+    if (!lastFix) return null;
+    try {
+      const parsed: unknown = JSON.parse(lastFix);
+      const at = (parsed as { at?: unknown }).at;
+      return typeof at === 'string' ? Date.parse(at) : null;
+    } catch {
+      return null;
+    }
+  }, [lastFix]);
+
+  const trackState = trackingState({
+    registered: tracking,
+    servicesEnabled: locationOn,
+    // Date.parse yields NaN for an unparseable string, which is a number and
+    // would therefore read as "a fix happened".
+    lastFixAt: lastFixAt === null || Number.isNaN(lastFixAt) ? null : lastFixAt,
+  });
 
   if (fatal) {
     return (
@@ -495,8 +551,25 @@ export default function App() {
 
         <View style={styles.line}>
           <Text style={styles.dim}>tracking</Text>
-          <Text style={tracking ? styles.good : styles.dim}>{tracking ? 'running' : 'stopped'}</Text>
+          <Text
+            style={
+              isHealthy(trackState)
+                ? styles.good
+                : needsUserAction(trackState)
+                  ? styles.bad
+                  : styles.dim
+            }
+          >
+            {trackingLabel(trackState)}
+          </Text>
         </View>
+
+        {needsUserAction(trackState) ? (
+          <Text style={styles.warn}>
+            Location is switched off for this device, so no fix can arrive however long
+            tracking runs. Turn it on in Android Settings.
+          </Text>
+        ) : null}
 
         <View style={styles.line}>
           <Text style={styles.dim}>fixes recorded</Text>
@@ -638,6 +711,9 @@ const styles = StyleSheet.create({
   mono: { color: '#8b949e', fontSize: 12, fontFamily: 'monospace' },
   good: { color: '#3fb950', fontSize: 13, ...bold },
   bad: { color: '#f85149', fontSize: 13, ...bold },
+  // Wraps, unlike the single-line status values, because it explains rather
+  // than labels.
+  warn: { color: '#f85149', fontSize: 13, lineHeight: 18, marginTop: 6 },
   error: { color: '#f85149', fontSize: 18, ...bold },
   row: { flexDirection: 'row', gap: 12, marginTop: 8 },
   stat: {
