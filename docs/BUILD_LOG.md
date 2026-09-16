@@ -9,6 +9,63 @@ Newest entries at the top.
 
 ---
 
+## 2026-09-16 — the location pipeline had never run, and it crashed at step one
+
+**Delegated:** fix the crash that made the app unusable the moment device location was
+switched on.
+
+**The crash.** From the crash buffer, not from guessing:
+
+```
+java.lang.IllegalArgumentException: Error: requested job be persisted
+  without holding RECEIVE_BOOT_COMPLETED permission.
+    at expo.modules.taskManager.TaskManagerUtils.updateOrScheduleJob
+    at expo.modules.location.taskConsumers.LocationTaskConsumer.reportLocationsImmediately
+```
+
+`expo-task-manager` hands every background fix to JS through a **persisted** JobScheduler
+job, and Android refuses to persist a job unless the app holds
+`RECEIVE_BOOT_COMPLETED`. The app did not. So the first location fix ever delivered threw
+on the main thread and killed the process — and since the fix was redelivered on every
+relaunch, the app crash-looped until location was switched back off. One line in
+`app.json`.
+
+The library's own manifest registers a `BOOT_COMPLETED` receiver and schedules persisted
+jobs but never declares the permission either of those needs, leaving it to the app. That
+is an upstream gap, not a mistake in this repo — but it is this repo's crash.
+
+**Why it took three field tests to find.** The location task had never once executed on a
+real device. Slice 1's field test drove the queue from the manual Record buttons, which
+never touch it. The walk on the 15th had the device's master location toggle off, so no fix
+was ever delivered. The first time a fix arrived was the first time this code path ran, and
+it failed immediately. Every prior "verified on device" result was real, and none of them
+covered this.
+
+**The pattern worth naming.** Three defects in two days — cleartext blocked in release
+builds, tracking reported as running when no fix could arrive, and this — and none of them
+were code. All three were configuration or environment, invisible to TypeScript, to 111
+passing unit tests, and to a green CI run. The tests were not weak; they were aimed at a
+layer that was not where the failures lived.
+
+So the guard added here is deliberately not another logic test. `src/config/manifest.test.ts`
+asserts *relationships between config values*: if background location is enabled, the
+permission that makes it survivable must be declared; if the foreground service is enabled,
+its permissions must be present; a plugin must not appear twice. Restating each value would
+only prove `app.json` parses. The RECEIVE_BOOT_COMPLETED case was confirmed to fail against
+the broken config before being trusted.
+
+**Corrected by hand:** `local.properties` twice. `prebuild --clean` deletes it, and writing
+it back with PowerShell's `Set-Content -Encoding utf8` prepends a BOM, so Gradle read the
+first key as `﻿sdk.dir` and reported the SDK as missing. The same PowerShell encoding
+trap this log already records, in a new place. Written with `printf` instead.
+
+**Not verified, and it matters:** the phone is behind a secure lockscreen, so tracking could
+not be started from adb. The permission is present in the packaged manifest and
+`granted=true` on the device, and the app no longer crash-loops on open — but the delivery
+path that actually threw has not been exercised. That needs one tap on Start tracking.
+
+---
+
 ## 2026-09-15 — two bugs, and a walk that recorded nothing
 
 **Delegated:** build a release APK so the app runs without Metro, then verify the offline
