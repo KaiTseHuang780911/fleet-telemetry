@@ -9,6 +9,66 @@ Newest entries at the top.
 
 ---
 
+## 2026-09-16 (later) — patching the dependency, and the patch that did nothing
+
+**Delegated:** stop the crash that made the app unusable whenever device location was on.
+
+Adding `RECEIVE_BOOT_COMPLETED` was correct and insufficient. The OS reported
+`granted=true`, the permission appeared in the packaged manifest with no `maxSdkVersion`,
+and JobScheduler threw the identical `IllegalArgumentException` an hour after the install.
+OxygenOS 10 grants the permission and then declines to honour it. Nothing an app can do
+about that from its own manifest.
+
+Ruled out before touching a dependency: a `maxSdkVersion` narrowing the declaration; a stale
+APK; AppOps background restrictions; `expo-task-manager@57.0.18`, byte-identical in this
+file. Both of `LocationTaskConsumer`'s delivery paths end at the same `scheduleJob`, so no
+Expo option avoids it.
+
+**The observation that made the fix small.** `setPersisted(true)` is hardcoded, and buys
+almost nothing: the job is one-shot, handing a batch of locations to JS within seconds of
+being scheduled, so persistence only matters if the device reboots inside that gap. Expo
+pays for that with a permission requirement that crash-loops the app on any ROM which
+refuses it.
+
+**The patch that did nothing, and how it was caught.** Patching the `.java` file and
+rebuilding produced `BUILD SUCCESSFUL` and `patch-package ✔`. Both were true about their own
+step, and the change reached nothing: **expo-task-manager ships a prebuilt AAR** in
+`local-maven-repo`, and its `android/src/main/java` is shipped for reference and never
+compiled. The only evidence anything was wrong was the APK's mtime being unchanged. Two
+green checkmarks, a successful build, and an artifact that could not possibly contain the
+fix — that is this project's recurring failure mode arriving in a new costume.
+
+So the patch grew to three files, each forced by the last:
+
+1. `TaskManagerUtils.java` — `setPersisted(false)`, the actual fix.
+2. `expo-module.config.json` — drop the `publication` block, so autolinking builds the
+   module from source instead of resolving the AAR.
+3. `android/build.gradle` — `project(':unimodules-app-loader')` is a path that only exists
+   inside Expo's monorepo, which is presumably *why* the module ships prebuilt. Replaced
+   with the coordinate the same package publishes, `host.exp.exponent:org.unimodules.apploader`.
+
+That is more invasive than a one-line change and should be recorded as such: one module now
+builds from source, so its build wiring is this project's problem at every Expo upgrade.
+
+**Cost, accepted deliberately:** background tasks no longer resume by themselves after a
+reboot until the app is next opened. Confirmed acceptable before the change was made.
+
+**Kept on purpose:** `RECEIVE_BOOT_COMPLETED` stays declared even though the patch removes
+the need for it. `npm install --ignore-scripts` skips postinstall and therefore the patch,
+silently; holding the permission keeps that failure benign on ROMs that honour it.
+
+**Verified, not assumed:** the patch was reverted out of `node_modules` and `npx
+patch-package` run against clean upstream files, reporting `expo-task-manager@57.0.17 ✔` — a
+patch only ever seen already-applied has not been shown to apply. The fix itself was then
+confirmed in **bytecode**, not in source: `javap -c` on the class Gradle actually compiled
+shows `iconst_0` immediately before `setPersisted(Z)`. After the first silent no-op, the
+source file's contents were no longer acceptable as evidence.
+
+**Still unverified:** the phone is behind a secure lockscreen, so tracking cannot be started
+from adb. Whether the crash is gone needs one tap on Start tracking.
+
+---
+
 ## 2026-09-16 — the location pipeline had never run, and it crashed at step one
 
 **Delegated:** fix the crash that made the app unusable the moment device location was

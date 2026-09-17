@@ -1,0 +1,67 @@
+diff --git a/node_modules/expo-task-manager/android/build.gradle b/node_modules/expo-task-manager/android/build.gradle
+index 5a1a795..e05592b 100644
+--- a/node_modules/expo-task-manager/android/build.gradle
++++ b/node_modules/expo-task-manager/android/build.gradle
+@@ -16,7 +16,15 @@ android {
+ }
+ 
+ dependencies {
+-  implementation project(':unimodules-app-loader')
++  // PATCHED (fleet-telemetry): was project(':unimodules-app-loader').
++  //
++  // Building this module from source (see expo-module.config.json) makes it a
++  // real Gradle subproject, and that project path only exists inside Expo's own
++  // monorepo -- which is presumably why the module ships prebuilt. The package
++  // publishes the same code as an AAR in its local-maven-repo, and autolinking
++  // already registers that repository, so the coordinate resolves where the
++  // project path cannot.
++  implementation "host.exp.exponent:org.unimodules.apploader:57.0.2"
+   api "androidx.core:core:1.17.0"
+   compileOnly "com.facebook.react:react-android"
+   testImplementation 'junit:junit:4.13.2'
+diff --git a/node_modules/expo-task-manager/android/src/main/java/expo/modules/taskManager/TaskManagerUtils.java b/node_modules/expo-task-manager/android/src/main/java/expo/modules/taskManager/TaskManagerUtils.java
+index 82bc0db..cf82454 100644
+--- a/node_modules/expo-task-manager/android/src/main/java/expo/modules/taskManager/TaskManagerUtils.java
++++ b/node_modules/expo-task-manager/android/src/main/java/expo/modules/taskManager/TaskManagerUtils.java
+@@ -202,7 +202,22 @@ public class TaskManagerUtils implements TaskManagerUtilsInterface {
+   private JobInfo createJobInfo(int jobId, ComponentName jobService, PersistableBundle extras) {
+     JobInfo.Builder jobBuilder = new JobInfo.Builder(jobId, jobService)
+         .setExtras(extras)
+-        .setPersisted(true)
++        // PATCHED (fleet-telemetry): was setPersisted(true).
++        //
++        // A persisted job requires RECEIVE_BOOT_COMPLETED, and JobScheduler
++        // reports a missing grant by throwing IllegalArgumentException on the
++        // main thread -- so on a ROM that declines to honour that permission,
++        // the first background location fix kills the process, and every
++        // relaunch redelivers it. The app crash-loops until the user turns
++        // device location off. Observed on OxygenOS 10 with the permission
++        // declared and reported as granted.
++        //
++        // Persistence buys almost nothing here: this is a one-shot job that
++        // hands a batch of locations to JS within seconds of being scheduled,
++        // so it only matters if the device reboots inside that gap. The cost
++        // is that background tasks do not resume by themselves after a reboot
++        // until the app is opened, which this project accepts deliberately.
++        .setPersisted(false)
+         .setRequiresDeviceIdle(false);
+ 
+     if (Build.VERSION.SDK_INT < 28) {
+diff --git a/node_modules/expo-task-manager/expo-module.config.json b/node_modules/expo-task-manager/expo-module.config.json
+index c61deb0..846e993 100644
+--- a/node_modules/expo-task-manager/expo-module.config.json
++++ b/node_modules/expo-task-manager/expo-module.config.json
+@@ -5,12 +5,6 @@
+     "appDelegateSubscribers": ["TaskManagerAppDelegateSubscriber"]
+   },
+   "android": {
+-    "modules": ["expo.modules.taskManager.TaskManagerModule"],
+-    "publication": {
+-      "groupId": "host.exp.exponent",
+-      "artifactId": "expo.modules.taskmanager",
+-      "version": "57.0.17",
+-      "repository": "local-maven-repo"
+-    }
++    "modules": ["expo.modules.taskManager.TaskManagerModule"]
+   }
+ }
