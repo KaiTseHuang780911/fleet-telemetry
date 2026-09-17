@@ -30,13 +30,21 @@ type StopEvent struct {
 // InsertClientStopEvents stores stop events a device reported about itself.
 //
 // Same shape and same reasoning as InsertPositions: arrays expanded with
-// unnest() so the parameter count does not grow with the row count, and
-// ON CONFLICT DO NOTHING so a device retrying a batch is a no-op.
+// unnest() so the parameter count does not grow with the row count.
 //
-// Note the deliberate DO NOTHING rather than DO UPDATE. A device reports
-// arrival first and departure later, in a *different* batch with a *different*
-// event id, so an update path is not needed — and if the same event id arrives
-// twice it is a replay, where the first copy is as good as the second.
+// A stop is reported twice under the same event id: once on arrival, with
+// departed_at NULL, and again once the vehicle leaves. That is why this is an
+// upsert and not the DO NOTHING it used to be — arrival is the event a fleet
+// wants promptly, and waiting for departure to report it would leave a driver
+// parked at a customer invisible for as long as they stayed there.
+//
+// The WHERE clause is the important part. It admits the completion of an open
+// stop and refuses everything else, so a replay of the *open* version arriving
+// late — which at-least-once delivery makes normal, not exceptional — cannot
+// erase a departure that has already been recorded. Replays are otherwise
+// no-ops, and arrived_at/lat/lon are never updated: if those disagree between
+// the two reports it is the same id describing a different stop, which is a
+// client bug rather than something to silently accept.
 func (s *Store) InsertClientStopEvents(ctx context.Context, events []StopEvent) (int, error) {
 	if len(events) == 0 {
 		return 0, nil
@@ -66,7 +74,10 @@ func (s *Store) InsertClientStopEvents(ctx context.Context, events []StopEvent) 
 		  FROM unnest($1::uuid[], $2::uuid[], $3::timestamptz[], $4::timestamptz[],
 		              $5::float8[], $6::float8[])
 		    AS t(id, vehicle_id, arrived_at, departed_at, lat, lon)
-		ON CONFLICT (id) DO NOTHING
+		ON CONFLICT (id) DO UPDATE
+		   SET departed_at = EXCLUDED.departed_at
+		 WHERE stop_events.departed_at IS NULL
+		   AND EXCLUDED.departed_at IS NOT NULL
 	`, ids, vehicleIDs, arrivedAts, departedAts, lats, lons)
 	if err != nil {
 		return 0, fmt.Errorf("insert %d client stop events: %w", n, err)

@@ -38,6 +38,13 @@ reason the Phase 5 eval suite exists.
 Idempotency works as it does for positions: client-reported events carry client-generated
 UUIDv7 ids, so replay is a no-op.
 
+**Amended 2026-09-17 by ADR-007.** This ADR originally assumed the device would report
+arrival and departure as two separate events with two ids, and the insert was
+`ON CONFLICT DO NOTHING` accordingly. Building the client half showed that produces two rows
+per stop and forces consumers to re-pair a relationship the device already knew. A stop is
+now reported twice under **one** id, and the insert is a guarded upsert that completes an
+open stop and refuses everything else. See ADR-007 for why the guard is not optional.
+
 ## Alternatives considered
 
 **Client reports only.** Simplest, and the device genuinely knows more. Rejected because it

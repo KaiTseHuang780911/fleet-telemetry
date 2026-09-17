@@ -14,6 +14,28 @@ function item(id: string, kind: OutboxItem['kind'] = 'position'): OutboxItem {
   };
 }
 
+/**
+ * A stop report, where the outbox row id and the wire id are deliberately
+ * different values — one stop is reported twice under a single event_id.
+ */
+function stopReport(rowId: string, eventId: string, departed = false): OutboxItem {
+  return {
+    id: rowId,
+    kind: 'stop_event',
+    recordedAt: '2026-09-05T10:00:00.000Z',
+    payload: {
+      event_id: eventId,
+      arrived_at: '2026-09-05T10:00:00.000Z',
+      ...(departed ? { departed_at: '2026-09-05T10:20:00.000Z' } : {}),
+      lat: 49.28,
+      lon: -123.12,
+    },
+    attempts: 0,
+    lastError: null,
+    createdAt: '2026-09-05T10:00:00.000Z',
+  };
+}
+
 function jsonResponse(status: number, body: unknown, headers: Record<string, string> = {}) {
   return new Response(JSON.stringify(body), {
     status,
@@ -61,6 +83,50 @@ describe('HttpTransport', () => {
       acceptedIds: ['good1', 'good2'],
       rejectedIds: ['bad'],
     });
+  });
+
+  // The server names ids from the payload; everything downstream of the
+  // transport works in outbox row ids. For a position those are the same value
+  // and the distinction is invisible. For a stop it is not: arrival and
+  // departure are separate rows carrying one event_id, so a rejection has to be
+  // matched on the wire id and translated back, or the refused rows are read as
+  // accepted and deleted unreported.
+  it('translates a rejected stop event back to every row that carried it', async () => {
+    const fetchImpl = (async () =>
+      jsonResponse(202, {
+        accepted: 0,
+        accepted_stops: 0,
+        rejected_stops: [{ id: 'stop-event-1', reason: 'arrived_at is required' }],
+      })) as unknown as typeof fetch;
+
+    const transport = new HttpTransport({ baseUrl: 'http://api.test', fetchImpl });
+    const outcome = await transport.send('d', [
+      stopReport('row-a', 'stop-event-1'),
+      stopReport('row-b', 'stop-event-1', true),
+    ]);
+
+    expect(outcome.kind).toBe('accepted');
+    if (outcome.kind === 'accepted') {
+      expect(outcome.rejectedIds.sort()).toEqual(['row-a', 'row-b']);
+      expect(outcome.acceptedIds).toEqual([]);
+    }
+  });
+
+  it('accepts both reports of a stop when the server refuses nothing', async () => {
+    const fetchImpl = (async () =>
+      jsonResponse(202, { accepted: 0, accepted_stops: 2 })) as unknown as typeof fetch;
+
+    const transport = new HttpTransport({ baseUrl: 'http://api.test', fetchImpl });
+    const outcome = await transport.send('d', [
+      stopReport('row-a', 'stop-event-1'),
+      stopReport('row-b', 'stop-event-1', true),
+    ]);
+
+    expect(outcome.kind).toBe('accepted');
+    if (outcome.kind === 'accepted') {
+      expect(outcome.acceptedIds.sort()).toEqual(['row-a', 'row-b']);
+      expect(outcome.rejectedIds).toEqual([]);
+    }
   });
 
   it('collects rejections from both readings and stop events', async () => {

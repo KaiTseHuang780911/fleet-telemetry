@@ -89,12 +89,24 @@ export class HttpTransport implements Transport {
       ];
       const rejectedSet = new Set(rejectedIds);
 
+      // The server names ids from the *payload* — reading_id, event_id — while
+      // everything downstream of here works in outbox row ids. For positions
+      // the two are the same value, but they are not the same thing, and a stop
+      // event proves it: one stop is reported twice under a single event_id,
+      // once on arrival and once on departure, so the two reports must be
+      // separate outbox rows or the queue's INSERT OR IGNORE would silently
+      // drop the departure and leave the stop open forever.
+      //
+      // So rejections are matched in wire-id space and translated back, rather
+      // than compared against row ids that were never what the server saw.
+      const rejectedItemIds = items.filter((i) => rejectedSet.has(wireIdOf(i))).map((i) => i.id);
+
       // The server reports counts and the ids it refused, not the ids it took.
       // Everything sent that was not refused was accepted, so acceptance is
       // derived here rather than requiring the server to echo every id back.
-      const acceptedIds = items.map((i) => i.id).filter((id) => !rejectedSet.has(id));
+      const acceptedIds = items.filter((i) => !rejectedSet.has(wireIdOf(i))).map((i) => i.id);
 
-      return { kind: 'accepted', acceptedIds, rejectedIds };
+      return { kind: 'accepted', acceptedIds, rejectedIds: rejectedItemIds };
     }
 
     if (response.status >= 400 && response.status < 500) {
@@ -105,6 +117,22 @@ export class HttpTransport implements Transport {
 
     return { kind: 'unavailable', reason: `HTTP ${response.status}: ${await safeText(response)}` };
   }
+}
+
+/**
+ * The id the server knows this item by.
+ *
+ * Distinct from `item.id`, which identifies the row in the local outbox. They
+ * coincide for positions and deliberately do not for stop events, where two
+ * rows report one event_id.
+ */
+function wireIdOf(item: OutboxItem): string {
+  const payload = item.payload as { reading_id?: unknown; event_id?: unknown };
+  if (typeof payload?.reading_id === 'string') return payload.reading_id;
+  if (typeof payload?.event_id === 'string') return payload.event_id;
+  // Nothing recognisable on the wire: fall back to the row id so the item is
+  // still matchable rather than silently unrejectable.
+  return item.id;
 }
 
 /**
