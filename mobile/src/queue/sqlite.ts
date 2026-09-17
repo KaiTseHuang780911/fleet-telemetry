@@ -51,8 +51,31 @@ export class SqliteOutbox implements OutboxStore {
     }
   }
 
-  static async open(name: string = DB_NAME): Promise<SqliteOutbox> {
-    const db = await SQLite.openDatabaseAsync(name);
+  /**
+   * Opens the outbox.
+   *
+   * `isolated` asks expo-sqlite for an independent native connection rather
+   * than the cached one it hands out by default for a given database name.
+   *
+   * That default is shared state with no reference counting, and it caused a
+   * real failure: the background location task opened a store per delivery and
+   * closed it in a `finally`, believing it held its own handle. It did not — it
+   * held the UI's, and closing it released the native database out from under
+   * the running screen. Every subsequent call failed with
+   * "NativeDatabase.prepareAsync has been rejected -> NullPointerException",
+   * and status polling stopped for the rest of the session. The `closed` flag
+   * on this class could not catch it, because the handle that was closed was a
+   * different SqliteOutbox instance than the one that broke.
+   *
+   * Two connections to one file are safe here: WAL allows a reader alongside a
+   * writer, and `busy_timeout` makes the loser of a write race wait instead of
+   * failing.
+   */
+  static async open(
+    name: string = DB_NAME,
+    { isolated = false }: { isolated?: boolean } = {},
+  ): Promise<SqliteOutbox> {
+    const db = await SQLite.openDatabaseAsync(name, { useNewConnection: isolated });
 
     // WAL lets a read proceed while a write is in flight. The app records
     // positions on a timer while a drain may be reading the queue, and the

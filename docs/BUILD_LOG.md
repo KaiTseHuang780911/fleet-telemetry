@@ -9,6 +9,49 @@ Newest entries at the top.
 
 ---
 
+## 2026-09-16 (later still) — the comment was right and the code was not
+
+**Found by the user**, one tap after the crash fix landed: "Stop tracking" produced
+`Status polling stopped: Call to function 'NativeDatabase.prepareAsync' has been rejected.
+-> Caused by: java.lang.NullPointerException`.
+
+**expo-sqlite caches one native connection per database name.** From its own options doc:
+"Whether to create new connection even if connection with the same database name exists in
+cache. Default: false." So the background location task, which opens a store per fix and
+closes it in a `finally`, was never holding its own handle. It was holding the UI's, and
+closing it released the native database out from under the running screen. Every call after
+that hit a released pointer, and status polling stopped for the rest of the session.
+
+The comment directly above the offending line said:
+
+> A fresh store per invocation rather than a module-level singleton. [...] a handle held
+> across that boundary is exactly the use-after-close that produced a NullPointerException
+> earlier in this project.
+
+The reasoning was correct and the word "fresh" was false. `assertOpen()` could not catch it
+either, because the instance that was closed was a *different* SqliteOutbox from the one
+that broke — the guard protects a handle, and the thing being shared was underneath it.
+
+**What this revises.** The 646-NPE storm two sessions ago was attributed to Fast Refresh
+leaking handles. That leak was real and the fix for it was right, but it was probably not
+the whole cause: the same shared-connection close was available to produce the identical
+error. A fix that makes symptoms stop is not the same as a diagnosis, and this one was
+filed as closed on weaker evidence than it deserved.
+
+**Fix:** `useNewConnection: true` for the task's store, exposed as an `isolated` option so
+the call site states which it wants. Two connections on one file are safe here — WAL allows
+a reader alongside a writer, and `busy_timeout` makes the loser of a write race wait rather
+than fail. Both were already configured, for exactly this eventuality, one layer too low to
+help.
+
+**Verified, not assumed:** the regression test failed against the old code with
+`Expected: true, Received: undefined` — no options passed at all. Two sibling assertions
+were loosened from `toBe(false)` to `toBeFalsy()` after writing them: expo-sqlite treats
+absent and false identically, so pinning the literal would fail a refactor that changed
+nothing observable.
+
+---
+
 ## 2026-09-16 (later) — patching the dependency, and the patch that did nothing
 
 **Delegated:** stop the crash that made the app unusable whenever device location was on.

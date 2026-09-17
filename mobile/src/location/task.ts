@@ -60,9 +60,15 @@ export async function recordLocations(locations: LocationObject[]): Promise<void
   // headless context may be torn down between deliveries, and a handle held
   // across that boundary is exactly the use-after-close that produced a
   // NullPointerException earlier in this project.
+  //
+  // `isolated` is what makes "fresh" true. expo-sqlite caches one native
+  // connection per database name, so without it this opened the *UI's* handle
+  // and the `finally` below closed it — breaking the running screen on every
+  // single location fix, with the same NullPointerException this comment was
+  // written to prevent.
   let store: SqliteOutbox | null = null;
   try {
-    store = await SqliteOutbox.open();
+    store = await SqliteOutbox.open(undefined, { isolated: true });
 
     const deviceId = await store.getSetting(DEVICE_ID_SETTING);
     if (!deviceId) {
