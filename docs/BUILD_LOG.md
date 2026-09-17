@@ -9,6 +9,59 @@ Newest entries at the top.
 
 ---
 
+## 2026-09-17 — nine arrivals, zero departures, and a three-day-old server
+
+**Delegated:** find why the device reported nine stop arrivals and not one departure.
+
+**Everything was correct.** The detector, reproduced against the mock route's own motion
+model — one fix per call, state round-tripped through JSON exactly as the device does it —
+emitted `arrived` at 320s and `departed` at 380s. Traced further, the wire payloads were
+right too: two reports, one `event_id`, `departed_at` present on the second. The server's
+upsert had five passing tests against real Postgres, two of which had been confirmed to
+fail against the old `DO NOTHING`.
+
+**The running server was three days old.** `api` pid 32332 started 2026-09-14 16:49;
+`stops.go` was changed 2026-09-17 01:36. `npm run dev` had been left running since Monday,
+so every departure the device sent was accepted — `accepted_stops: 1` — by a binary that
+still did `ON CONFLICT DO NOTHING` and discarded it. Restarting the process fixed it on the
+first try.
+
+**The deduction that got there.** Before finding the stale process, the data already proved
+the emissions were happening. An arrival requires `!state.openStop`, and `openStop` is
+cleared *only* on the departure path — so nine arrivals could not have occurred unless eight
+departures had fired first. That ruled out the entire detector and moved the search
+downstream, which is where it was. Worth remembering: the counters disagreed with the
+hypothesis, and the counters were right.
+
+**The pattern, third time this week.** Correct code, green tests, and an artifact that does
+not contain it:
+
+- the patch that edited `node_modules` sources Expo never compiles, because it ships a
+  prebuilt AAR;
+- the mock run against an APK built before the feature existed;
+- and now a server binary three days older than the fix it was supposed to be running.
+
+Each time the verification step said "success" about the step it performed, and each time
+the thing under test was not the thing running. The habit that catches all three is the
+same, and it is not about testing harder: **check the artifact, not the source.** APK mtime,
+packaged manifest, bytecode, process start time.
+
+**Also closed:** `readings.ts` had never had a single test. `uuid` ships as ESM and Jest
+cannot transform it, so any test importing that module failed to *load* — invisibly, because
+no such test existed to fail. `makeStopItem` was changed yesterday with no coverage at all.
+Mocking `uuid` makes it testable, and the new pipeline test covers the joins between links
+that each had green tests individually.
+
+**Added:** emission counters on the debug screen (`arr 9 · dep 0 · anchored · open`), so
+"the detector never emitted it" and "it was emitted and lost downstream" stop looking
+identical from the outside. They would have answered this in one glance.
+
+**Left behind:** eleven mock stops permanently open. Their departures were consumed by the
+stale server and will not be resent. Synthetic data, so no loss — but a real fleet would
+need a repair pass, and nothing currently detects a stop that has been open for a week.
+
+---
+
 ## 2026-09-16 (later still) — the comment was right and the code was not
 
 **Found by the user**, one tap after the crash fix landed: "Stop tracking" produced

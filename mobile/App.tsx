@@ -49,7 +49,7 @@ import {
   trackingLabel,
   trackingState,
 } from './src/location/status';
-import { FIX_COUNT_SETTING, LAST_FIX_SETTING } from './src/location/task';
+import { FIX_COUNT_SETTING, LAST_FIX_SETTING, STOP_DEBUG_SETTING } from './src/location/task';
 import { API_BASE_URL, API_URL_IS_FALLBACK, DEVICE_ID_SETTING } from './src/config';
 import {
   PERIODIC_DRAIN_MS,
@@ -107,6 +107,7 @@ export default function App() {
   const [locationOn, setLocationOn] = useState(true);
   const [lastFix, setLastFix] = useState<string | null>(null);
   const [fixCount, setFixCount] = useState(0);
+  const [stopDebug, setStopDebug] = useState<string | null>(null);
   const [mockRunning, setMockRunning] = useState(false);
 
   const storeRef = useRef<SqliteOutbox | null>(null);
@@ -189,6 +190,7 @@ export default function App() {
       if (store) {
         setLastFix(await store.getSetting(LAST_FIX_SETTING));
         setFixCount(Number((await store.getSetting(FIX_COUNT_SETTING)) ?? '0'));
+        setStopDebug(await store.getSetting(STOP_DEBUG_SETTING));
       }
       setTracking(await isTracking());
       setLocationOn(await servicesEnabled());
@@ -576,6 +578,11 @@ export default function App() {
           <Text style={styles.mono}>{fixCount}</Text>
         </View>
 
+        <View style={styles.line}>
+          <Text style={styles.dim}>stops detected</Text>
+          <Text style={styles.mono}>{describeStops(stopDebug)}</Text>
+        </View>
+
         {lastFix ? <Text style={styles.mono}>{lastFix}</Text> : null}
 
         <View style={styles.buttons}>
@@ -636,6 +643,32 @@ export default function App() {
       </ScrollView>
     </View>
   );
+}
+
+/**
+ * Renders the detector's own counters.
+ *
+ * `open` is the interesting one: if it reads false immediately after an arrival
+ * was counted, detector state is not surviving between deliveries and no
+ * departure can ever fire.
+ */
+function describeStops(raw: string | null): string {
+  if (!raw) return 'none yet';
+  try {
+    const d = JSON.parse(raw) as {
+      arrived?: number;
+      departed?: number;
+      anchored?: boolean;
+      open?: boolean;
+    };
+    return (
+      `arr ${d.arrived ?? 0} · dep ${d.departed ?? 0}` +
+      ` · ${d.anchored ? 'anchored' : 'no anchor'}` +
+      ` · ${d.open ? 'open' : 'closed'}`
+    );
+  } catch {
+    return 'unreadable';
+  }
 }
 
 function Stat({ label, value, tone }: { label: string; value: number; tone?: 'bad' }) {

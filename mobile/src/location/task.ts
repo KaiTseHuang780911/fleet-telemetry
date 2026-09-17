@@ -25,6 +25,7 @@ import {
   INITIAL_STOP_STATE,
   detectStops,
   type Fix,
+  type StopEmission,
   type StopState,
 } from '../stops/detect';
 import { motionFrom, normaliseHeading } from './mapping';
@@ -36,6 +37,15 @@ export const LAST_FIX_SETTING = 'last_fix';
 export const FIX_COUNT_SETTING = 'fix_count';
 /** Detector state, JSON. Persisted because the process dies between fixes. */
 export const STOP_STATE_SETTING = 'stop_state';
+/**
+ * Counters for what the detector emitted, so the debug screen can show whether
+ * a stop was detected at all — distinct from whether the server stored it.
+ *
+ * The device reported nine arrivals and zero departures while every unit test
+ * on both sides was green. Without this, "the detector never emitted it" and
+ * "it was emitted and lost downstream" look identical from the outside.
+ */
+export const STOP_DEBUG_SETTING = 'stop_debug';
 
 interface LocationTaskData {
   locations: LocationObject[];
@@ -202,9 +212,51 @@ async function detectAndQueueStops(
     // event id — a duplicate stop, which reconciliation can see. Writing state
     // first would instead lose the stop silently, which it could not.
     await store.setSetting(STOP_STATE_SETTING, JSON.stringify(state));
+
+    // Instrumentation, deliberately last: nothing above it may be affected by
+    // a failure to record diagnostics.
+    await recordStopDebug(store, state, emissions);
   } catch (err) {
     console.error('[stops] detection failed:', err instanceof Error ? err.message : String(err));
   }
+}
+
+/** Running totals of what the detector emitted, plus its current shape. */
+async function recordStopDebug(
+  store: SqliteOutbox,
+  state: StopState,
+  emissions: StopEmission[],
+): Promise<void> {
+  let arrived = 0;
+  let departed = 0;
+  const raw = await store.getSetting(STOP_DEBUG_SETTING);
+  if (raw) {
+    try {
+      const prev = JSON.parse(raw) as { arrived?: number; departed?: number };
+      arrived = prev.arrived ?? 0;
+      departed = prev.departed ?? 0;
+    } catch {
+      // Corrupt diagnostics are worth less than the detection they describe.
+    }
+  }
+
+  for (const event of emissions) {
+    if (event.kind === 'arrived') arrived += 1;
+    else departed += 1;
+  }
+
+  await store.setSetting(
+    STOP_DEBUG_SETTING,
+    JSON.stringify({
+      arrived,
+      departed,
+      // Whether the detector is currently holding a candidate and an open stop.
+      // If `open` is false straight after an arrival, state is not surviving
+      // the round trip and the departure can never fire.
+      anchored: state.anchor !== null,
+      open: state.openStop !== null,
+    }),
+  );
 }
 
 /** Reads detector state, treating anything unparseable as a fresh start. */
