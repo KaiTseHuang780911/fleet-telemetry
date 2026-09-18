@@ -51,10 +51,11 @@ describe('trackingState', () => {
     );
   });
 
-  // Deliberately not a staleness check: a parked vehicle emits nothing for as
-  // long as it stays parked, because distanceInterval is a hard filter on
-  // Android. Flagging that as a fault would be the original bug with the sign
-  // flipped.
+  // Deliberately not a staleness check. A parked vehicle does keep emitting —
+  // measured at a 25s mean gap on a real drive — but irregularly, and the same
+  // drive saw 408s between fixes while legitimately stationary. A timeout
+  // short enough to catch a real fault would flag that as one, which is the
+  // original bug with the sign flipped.
   it('keeps reporting running however old the last fix is', () => {
     expect(trackingState(inputs({ lastFixAt: 0 }))).toBe('running');
     expect(trackingState(inputs({ lastFixAt: Number.MIN_SAFE_INTEGER }))).toBe('running');

@@ -42,13 +42,19 @@ export interface TrackingInputs {
 /**
  * Collapse the three facts into one label.
  *
- * Deliberately **not** a staleness heuristic. "No fix for two minutes" is the
- * normal, correct behaviour of a parked vehicle: `distanceInterval` is a hard
- * filter on Android, not a hint, so a stationary device emits nothing at all
- * and a timeout would flag every legitimate stop as a fault. Claiming a
- * failure that is not happening would repeat the original bug with the sign
- * flipped, so the only negative claim made here is one the system has already
- * stated as fact — services being off.
+ * Deliberately **not** a staleness heuristic, though not for the reason first
+ * written here. An earlier version of this comment claimed `distanceInterval`
+ * was a hard filter and a stationary device emitted nothing; a real 45-minute
+ * drive says otherwise. A parked phone kept producing fixes — GPS jitter
+ * exceeds a 20m threshold often enough — at a mean gap of 25s.
+ *
+ * The conclusion survives the correction, because what matters is the *worst*
+ * gap rather than the mean: the same drive recorded 408s between fixes while
+ * legitimately stationary. Any timeout short enough to catch a real fault
+ * would flag that parked vehicle, and claiming a failure that is not happening
+ * would repeat the original bug with the sign flipped. So the only negative
+ * claim made here is one the system has already stated as fact — services
+ * being off.
  *
  * `awaiting-fix` carries the ambiguous case without resolving it: it is
  * expected for the first few seconds after starting, and it is a loud problem
