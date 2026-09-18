@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -43,6 +44,46 @@ func (s *Server) handleVehicleStops(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, stops)
+}
+
+// handleVehiclePositions returns a vehicle's position stream over a window.
+//
+// The route layer needs this and nothing else did until now, which is why the
+// composite index ADR-001 created for exactly this query — (vehicle_id,
+// recorded_at DESC) — had never been used by anything.
+//
+// ?limit= narrows the cap; the response reports whether it truncated, because a
+// route drawn from a silently shortened stream looks identical to a vehicle
+// that simply stopped moving.
+func (s *Server) handleVehiclePositions(w http.ResponseWriter, r *http.Request) {
+	vehicleID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "vehicle id must be a UUID")
+		return
+	}
+
+	from, to, ok := parseWindow(w, r)
+	if !ok {
+		return
+	}
+
+	limit := store.MaxPositionsPerQuery
+	if v := r.URL.Query().Get("limit"); v != "" {
+		parsed, err := strconv.Atoi(v)
+		if err != nil || parsed <= 0 {
+			writeError(w, http.StatusBadRequest, "limit must be a positive integer")
+			return
+		}
+		limit = parsed
+	}
+
+	page, err := s.store.ListPositions(r.Context(), vehicleID, from, to, limit)
+	if err != nil {
+		s.logger.Error("list positions", "vehicle_id", vehicleID, "err", err)
+		writeError(w, http.StatusInternalServerError, "could not list positions")
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
 }
 
 // handleReconciliation reports how far the device's own stop detection and the

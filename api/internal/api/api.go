@@ -28,6 +28,7 @@ type Store interface {
 	ListVehicles(ctx context.Context) ([]store.Vehicle, error)
 	ListTripsForVehicle(ctx context.Context, vehicleID uuid.UUID, from, to time.Time) ([]store.Trip, error)
 	ListStopEvents(ctx context.Context, vehicleID uuid.UUID, from, to time.Time, source string) ([]store.StopEvent, error)
+	ListPositions(ctx context.Context, vehicleID uuid.UUID, from, to time.Time, limit int) (store.PositionPage, error)
 	VehicleIDForDevice(ctx context.Context, externalID string) (uuid.UUID, error)
 	InsertClientStopEvents(ctx context.Context, events []store.StopEvent) (int, error)
 	SummariseReconciliation(ctx context.Context, from, to time.Time) (store.ReconciliationSummary, error)
@@ -74,6 +75,7 @@ func (s *Server) Routes() http.Handler {
 		r.Get("/vehicles", s.handleListVehicles)
 		r.Get("/vehicles/{id}/trips", s.handleVehicleTrips)
 		r.Get("/vehicles/{id}/stops", s.handleVehicleStops)
+		r.Get("/vehicles/{id}/positions", s.handleVehiclePositions)
 		r.Get("/reconciliation", s.handleReconciliation)
 	})
 
