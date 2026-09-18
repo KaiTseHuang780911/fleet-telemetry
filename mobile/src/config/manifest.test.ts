@@ -68,6 +68,46 @@ describe('android permissions', () => {
   });
 });
 
+describe('cleartext traffic', () => {
+  /**
+   * Finds the android block of the expo-build-properties plugin, if any.
+   */
+  function buildProperties(): Record<string, unknown> | null {
+    const config = pluginConfig('expo-build-properties');
+    if (!config) return null;
+    return (config['android'] as Record<string, unknown>) ?? {};
+  }
+
+  // The bug that cost the first field test. Expo injects
+  // usesCleartextTraffic into *debug* builds and not release ones, so the
+  // first APK built to run standalone could not reach an http:// API at all.
+  // Every upload failed with UnknownServiceException while the queue, quite
+  // correctly, kept everything and uploaded nothing.
+  //
+  // Tied to the configured URL rather than asserted flatly, so that the day
+  // the API moves to https this test stops demanding a permission the app no
+  // longer needs — and fails if someone removes TLS without restoring it.
+  it('permits cleartext whenever the API is reached over plain http', () => {
+    // The committed fallback, since mobile/.env is gitignored and absent in CI.
+    const configuredUrl = process.env['EXPO_PUBLIC_API_URL'] ?? 'http://10.0.2.2:8080';
+    if (!configuredUrl.startsWith('http://')) return;
+
+    expect(buildProperties()?.['usesCleartextTraffic']).toBe(true);
+  });
+
+  // The inverse, stated so the cleanup is not forgotten: once every
+  // configured URL is https, this flag is a liability rather than a
+  // convenience and should be deleted rather than narrowed.
+  it('is the only thing standing between this build and a production one', () => {
+    const permitsCleartext = buildProperties()?.['usesCleartextTraffic'] === true;
+    const configuredUrl = process.env['EXPO_PUBLIC_API_URL'] ?? 'http://10.0.2.2:8080';
+
+    if (permitsCleartext) {
+      expect(configuredUrl.startsWith('http://')).toBe(true);
+    }
+  });
+});
+
 describe('plugins', () => {
   // The duplicate that briefly existed: expo-build-properties appeared twice,
   // once bare and once configured. Harmless by luck — the configured entry ran
