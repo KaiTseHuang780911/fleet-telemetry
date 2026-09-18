@@ -44,3 +44,21 @@ export function motionFrom(speed: number | null | undefined): MotionState {
   if (speed < 2.5) return 'walking';
   return 'driving';
 }
+
+/**
+ * Converts a platform battery level to the percentage the server stores.
+ *
+ * expo-battery reports a fraction in [0, 1] and **-1 when the level is
+ * unavailable**, which is the same sentinel-as-data trap as Android's heading.
+ * The server constrains battery_pct to [0, 100] and rejects the whole reading
+ * outside it, so passing -1 through would discard a perfectly good position for
+ * the sake of a field nothing depends on.
+ *
+ * Rounded to an integer because the column is a smallint, and clamped because a
+ * float fraction can land a hair outside its range and turn 1.0000001 into 100
+ * by luck rather than by rule.
+ */
+export function batteryPctFrom(level: number | null | undefined): number | undefined {
+  if (level == null || !Number.isFinite(level) || level < 0) return undefined;
+  return Math.round(Math.min(1, level) * 100);
+}

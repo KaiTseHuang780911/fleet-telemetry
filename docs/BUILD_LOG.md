@@ -9,6 +9,33 @@ Newest entries at the top.
 
 ---
 
+## 2026-09-18 — battery telemetry, and a trap recognised before it bit
+
+**Delegated:** record the device's charge level, so slice 2d has something to tune against.
+
+Small change, one detail worth keeping. `expo-battery` reports **-1 when the level is
+unavailable**, and the server rejects any reading whose `battery_pct` falls outside [0, 100].
+Passed through, that sentinel would have discarded a perfectly good *position* for the sake
+of a diagnostic field — the same failure as Android's `heading: -1`, which this project has
+already been bitten by once.
+
+This time the pattern was recognised before writing the line, which is the first time that
+has happened. The conversion went into `mapping.ts` as a pure function with five tests
+rather than inline, next to `normaliseHeading`, which exists for exactly the same reason.
+Worth noting in a log that mostly records the opposite.
+
+**Verified on hardware, after two failed attempts that were both my error:** first I tapped
+"One fix", which only displays a fix and never calls `recordLocations`; then the phone locked
+and my taps went to the lockscreen. Neither was the code. 28 rows, all 28 carrying
+`battery_pct`, real GPS at 11.8-46.8m accuracy.
+
+**Reads 100% because the phone is charging.** A drain curve needs it unplugged, so the
+adaptive policy still has no baseline — which is why 2d is deliberately split: record first,
+adapt second. The 90s dwell threshold was guessed against no data and is still a guess; this
+is the attempt not to repeat that.
+
+---
+
 ## 2026-09-17 (evening) — the drive worked, and my own fix broke the batch
 
 **The field test passed.** 101 real GPS fixes over 44 minutes, accuracy 7.5-352m, speeds to

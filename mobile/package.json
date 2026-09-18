@@ -5,6 +5,7 @@
   "dependencies": {
     "@react-native-community/netinfo": "12.0.1",
     "expo": "~57.0.20",
+    "expo-battery": "~57.0.3",
     "expo-build-properties": "~57.0.19",
     "expo-location": "~57.0.17",
     "expo-sqlite": "~57.0.2",

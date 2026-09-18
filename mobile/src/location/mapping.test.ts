@@ -1,4 +1,4 @@
-import { motionFrom, normaliseHeading } from './mapping';
+import { batteryPctFrom, motionFrom, normaliseHeading } from './mapping';
 
 describe('normaliseHeading', () => {
   // The case that matters: Android reports -1 when it has no fix on direction,
@@ -69,5 +69,46 @@ describe('motionFrom', () => {
     for (const speed of [null, undefined, -5, 0, 0.49, 0.5, 2.49, 2.5, 100, 1e9]) {
       expect(allowed.has(motionFrom(speed))).toBe(true);
     }
+  });
+});
+
+describe('batteryPctFrom', () => {
+  it('converts a fraction to a whole percentage', () => {
+    expect(batteryPctFrom(0.5)).toBe(50);
+    expect(batteryPctFrom(1)).toBe(100);
+    expect(batteryPctFrom(0)).toBe(0);
+  });
+
+  // The heading bug again, in a new field. expo-battery reports -1 when the
+  // level is unavailable, and the server rejects the entire reading for a
+  // battery_pct outside [0, 100] -- so a sentinel passed through would cost a
+  // position, which is the one thing here that actually matters.
+  it('treats the unavailable sentinel as absent, not as a value', () => {
+    expect(batteryPctFrom(-1)).toBeUndefined();
+  });
+
+  it('treats a missing level as absent', () => {
+    expect(batteryPctFrom(null)).toBeUndefined();
+    expect(batteryPctFrom(undefined)).toBeUndefined();
+    expect(batteryPctFrom(Number.NaN)).toBeUndefined();
+  });
+
+  // A float fraction can land marginally outside its range; the column is a
+  // smallint with a CHECK, so the clamp is what keeps a rounding artefact from
+  // rejecting the reading.
+  it('never produces a value the server would reject', () => {
+    for (const level of [0, 0.001, 0.5, 0.999, 1, 1.0000001, 2]) {
+      const pct = batteryPctFrom(level);
+      expect(pct).toBeDefined();
+      expect(pct).toBeGreaterThanOrEqual(0);
+      expect(pct).toBeLessThanOrEqual(100);
+      expect(Number.isInteger(pct)).toBe(true);
+    }
+  });
+
+  // 0% is a real reading, not a missing one. `if (!pct)` would drop it.
+  it('distinguishes an empty battery from an unknown one', () => {
+    expect(batteryPctFrom(0)).toBe(0);
+    expect(batteryPctFrom(null)).toBeUndefined();
   });
 });

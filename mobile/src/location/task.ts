@@ -13,6 +13,7 @@
  */
 
 import * as TaskManager from 'expo-task-manager';
+import * as Battery from 'expo-battery';
 import type { LocationObject } from 'expo-location';
 
 import { HttpTransport } from '../api/transport';
@@ -28,7 +29,7 @@ import {
   type StopEmission,
   type StopState,
 } from '../stops/detect';
-import { motionFrom, normaliseHeading } from './mapping';
+import { batteryPctFrom, motionFrom, normaliseHeading } from './mapping';
 
 export const LOCATION_TASK = 'fleet-telemetry-location';
 
@@ -98,6 +99,11 @@ export async function recordLocations(locations: LocationObject[]): Promise<void
       return;
     }
 
+    // Read once per delivery, not per fix: a batch spans seconds, the charge
+    // does not move in that time, and this is a native call on the path that
+    // runs every ten seconds for an entire shift.
+    const batteryPct = await readBatteryPct();
+
     const items = locations.map((fix) =>
       makePositionItem({
         lat: fix.coords.latitude,
@@ -107,6 +113,7 @@ export async function recordLocations(locations: LocationObject[]): Promise<void
         speedMps: fix.coords.speed ?? undefined,
         headingDeg: normaliseHeading(fix.coords.heading),
         accuracyM: fix.coords.accuracy ?? undefined,
+        batteryPct,
         motionState: motionFrom(fix.coords.speed),
         // The device clock at the moment of the fix, not now. These can arrive
         // in a batch well after the fact.
@@ -161,6 +168,24 @@ export async function recordLocations(locations: LocationObject[]): Promise<void
     // Always close. This runs repeatedly over a shift, and a handle leaked per
     // delivery is a handle leaked per ten seconds.
     await store?.close();
+  }
+}
+
+
+/**
+ * The device's charge level, or undefined if it cannot be read.
+ *
+ * Swallows its own failure on purpose. Battery is context for tuning the
+ * sampling policy; a position is the record everything downstream derives from.
+ * Losing a fix because a diagnostic field was unavailable would be a bad trade,
+ * and this runs on the hot path where that trade would be made repeatedly.
+ */
+async function readBatteryPct(): Promise<number | undefined> {
+  try {
+    return batteryPctFrom(await Battery.getBatteryLevelAsync());
+  } catch (err) {
+    console.warn('[battery] unavailable:', err instanceof Error ? err.message : String(err));
+    return undefined;
   }
 }
 
