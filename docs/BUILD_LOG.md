@@ -9,6 +9,64 @@ Newest entries at the top.
 
 ---
 
+## 2026-09-17 (evening) — the drive worked, and my own fix broke the batch
+
+**The field test passed.** 101 real GPS fixes over 44 minutes, accuracy 7.5-352m, speeds to
+19.6 m/s, delivered through the background task and the offline queue. Three stops detected
+on-device with real durations: 6m18s, 2m36s, 12m32s.
+
+**And the device then resent them two hundred times.** `enqueued 21,014 · inserted 101 ·
+duplicates 20,913`, climbing a batch every five seconds. The server was right and the client
+was right; the app's own log said why:
+
+```
+drain (foreground): sent 100, accepted 0 — HTTP 500: {"error":"could not store stop events"}
+```
+
+```
+ERROR: ON CONFLICT DO UPDATE command cannot affect row a second time (SQLSTATE 21000)
+```
+
+**This was the morning's upsert.** A device offline through an entire stop queues the
+arrival and the departure together and drains them in one request — the normal case for an
+offline-first queue, not a pathological one. Postgres refuses to let a single statement
+update the same row twice, so the whole batch failed, the API answered 500, and the client
+did exactly what it should: kept everything and retried. The old `DO NOTHING` had tolerated
+the repeat silently, so this only became reachable when the upsert landed.
+
+Five passing tests covered that upsert. Every one of them inserted the two reports in
+*separate calls*, because that is how I pictured a device behaving. The one arrangement I
+never wrote was the one an offline queue actually produces.
+
+**Fix:** collapse repeats by event id before the insert, preferring the report that carries
+a departure. Four new tests, all confirmed to fail against the unfixed version with the
+production error string.
+
+**What the failure demonstrated on the way past.** Idempotency turned a two-hundred-fold
+redelivery into 20,913 rejected duplicates and 101 stored rows. Nothing was lost, nothing
+was double-counted, and the queue held the data through hours of a server returning 500.
+The guarantee ADR-005 claims is the one that actually held when everything else did not.
+
+**The reconciliation, finally.** `stop_event_matches` held nothing until tonight:
+
+```
+vehicles=1 trips=15 derived_stops=17 client_stops=14
+matched=13 client_only=1 derived_only=4
+```
+
+Agreement between the on-device detector and the server's independent derivation:
+**mean 16.7s and 1.8m apart, worst case 20s and 24m.** That is the number ADR-002 exists to
+produce, and it says the two detectors are looking at the same stops. The four derived-only
+stops are the 90s dwell threshold doing its job on shorter pauses; whether that threshold is
+right is now a question with data behind it instead of a guess.
+
+**The lesson, restated.** Yesterday's was "check the artifact, not the source". Today's is
+narrower and sharper: **the shape of a test fixture is itself an assumption.** All five
+tests were honest, thorough, and arranged the data the way I imagined rather than the way
+the system produces it.
+
+---
+
 ## 2026-09-17 — nine arrivals, zero departures, and a three-day-old server
 
 **Delegated:** find why the device reported nine stop arrivals and not one departure.

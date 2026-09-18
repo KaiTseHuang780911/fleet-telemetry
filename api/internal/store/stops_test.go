@@ -212,3 +212,97 @@ func TestAStopReportedCompleteInOneGoIsStored(t *testing.T) {
 		t.Errorf("departed_at = %v, want %v", got.DepartedAt, departed)
 	}
 }
+
+// The failure that took the field test down.
+//
+// A device offline through an entire stop queues the arrival and the departure
+// together and drains them in one request. Postgres refuses to let a single
+// statement update the same row twice under ON CONFLICT DO UPDATE, so before
+// this was handled the whole batch failed with SQLSTATE 21000 -- the API
+// answered 500, the client correctly kept everything and retried, and the same
+// readings were redelivered roughly two hundred times.
+func TestABatchCarryingBothReportsOfOneStopIsStored(t *testing.T) {
+	s, ctx, open := stopFixture(t)
+
+	departed := open.ArrivedAt.Add(15 * time.Minute)
+	complete := open
+	complete.DepartedAt = &departed
+
+	if _, err := s.InsertClientStopEvents(ctx, []StopEvent{open, complete}); err != nil {
+		t.Fatalf("one batch holding both reports of a stop failed to insert: %v", err)
+	}
+
+	if n := countStops(t, s, ctx); n != 1 {
+		t.Fatalf("two reports of one stop produced %d rows, want 1", n)
+	}
+	got := fetchStop(t, s, ctx, open.ID)
+	if got.DepartedAt == nil || !got.DepartedAt.Equal(departed) {
+		t.Errorf("departed_at = %v, want %v", got.DepartedAt, departed)
+	}
+}
+
+// Nothing guarantees the queue drains a stop's two reports in order, so the
+// completed one must win regardless of where it sits in the batch.
+func TestTheCompletedReportWinsWhicheverOrderItArrivesIn(t *testing.T) {
+	s, ctx, open := stopFixture(t)
+
+	departed := open.ArrivedAt.Add(7 * time.Minute)
+	complete := open
+	complete.DepartedAt = &departed
+
+	if _, err := s.InsertClientStopEvents(ctx, []StopEvent{complete, open}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	got := fetchStop(t, s, ctx, open.ID)
+	if got.DepartedAt == nil {
+		t.Fatal("the open report overwrote the completed one within the batch")
+	}
+	if !got.DepartedAt.Equal(departed) {
+		t.Errorf("departed_at = %v, want %v", got.DepartedAt, departed)
+	}
+}
+
+// A plain replay inside one batch must not fail either.
+func TestABatchHoldingTheSameReportTwiceIsStoredOnce(t *testing.T) {
+	s, ctx, open := stopFixture(t)
+
+	if _, err := s.InsertClientStopEvents(ctx, []StopEvent{open, open}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if n := countStops(t, s, ctx); n != 1 {
+		t.Fatalf("got %d rows, want 1", n)
+	}
+}
+
+// Several stops in one batch, one of them reported twice: the repeat must not
+// cost the others.
+func TestOneRepeatedStopDoesNotSinkTheRestOfTheBatch(t *testing.T) {
+	s, ctx, open := stopFixture(t)
+
+	second := open
+	id, err := uuid.NewV7()
+	if err != nil {
+		t.Fatalf("uuid: %v", err)
+	}
+	second.ID = id
+	second.ArrivedAt = open.ArrivedAt.Add(20 * time.Minute)
+
+	departed := open.ArrivedAt.Add(4 * time.Minute)
+	complete := open
+	complete.DepartedAt = &departed
+
+	if _, err := s.InsertClientStopEvents(ctx, []StopEvent{open, complete, second}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	if n := countStops(t, s, ctx); n != 2 {
+		t.Fatalf("got %d rows, want 2", n)
+	}
+	if got := fetchStop(t, s, ctx, open.ID); got.DepartedAt == nil {
+		t.Error("the repeated stop was not completed")
+	}
+	if got := fetchStop(t, s, ctx, second.ID); got.DepartedAt != nil {
+		t.Error("the unrelated stop was wrongly completed")
+	}
+}

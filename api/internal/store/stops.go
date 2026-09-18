@@ -50,6 +50,8 @@ func (s *Store) InsertClientStopEvents(ctx context.Context, events []StopEvent) 
 		return 0, nil
 	}
 
+	events = collapseByID(events)
+
 	n := len(events)
 	var (
 		ids         = make([]uuid.UUID, n)
@@ -83,6 +85,43 @@ func (s *Store) InsertClientStopEvents(ctx context.Context, events []StopEvent) 
 		return 0, fmt.Errorf("insert %d client stop events: %w", n, err)
 	}
 	return int(tag.RowsAffected()), nil
+}
+
+// collapseByID reduces a batch to one row per event id, preferring the report
+// that carries a departure.
+//
+// This is not defensive tidying; without it the insert fails outright.
+// Postgres refuses to let one statement touch the same row twice under
+// ON CONFLICT DO UPDATE:
+//
+//	ERROR: ON CONFLICT DO UPDATE command cannot affect row a second time
+//	(SQLSTATE 21000)
+//
+// and a batch carrying both reports of one stop is the normal case, not a
+// pathological one. A device offline through an entire stop queues the arrival
+// and the departure together and drains them in a single request the moment it
+// reconnects. The previous DO NOTHING tolerated the repeat silently, so this
+// only became reachable when the upsert arrived.
+//
+// The completed report wins because it strictly supersedes the open one: same
+// stop, same id, one more fact known. Order within the batch is irrelevant,
+// which matters because nothing guarantees the queue drains them in order.
+func collapseByID(events []StopEvent) []StopEvent {
+	seen := make(map[uuid.UUID]int, len(events))
+	out := make([]StopEvent, 0, len(events))
+
+	for _, e := range events {
+		idx, ok := seen[e.ID]
+		if !ok {
+			seen[e.ID] = len(out)
+			out = append(out, e)
+			continue
+		}
+		if out[idx].DepartedAt == nil && e.DepartedAt != nil {
+			out[idx] = e
+		}
+	}
+	return out
 }
 
 // ListStopEvents returns stop events for a vehicle overlapping [from, to),
