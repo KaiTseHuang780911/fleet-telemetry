@@ -36,6 +36,7 @@ import {
   type PermissionState,
 } from './src/location/permissions';
 import { MockRoute } from './src/location/mock';
+import { RouteScreen } from './src/screens/RouteScreen';
 import {
   getCurrentFix,
   isTracking,
@@ -109,6 +110,10 @@ export default function App() {
   const [fixCount, setFixCount] = useState(0);
   const [stopDebug, setStopDebug] = useState<string | null>(null);
   const [mockRunning, setMockRunning] = useState(false);
+  // Which screen is showing. A two-way toggle rather than a navigation library:
+  // there are two screens and one of them is scaffolding, so the dependency
+  // would cost more than it saves until there is a third.
+  const [tab, setTab] = useState<'outbox' | 'route'>('route');
 
   const storeRef = useRef<SqliteOutbox | null>(null);
   const engineRef = useRef<SyncEngine | null>(null);
@@ -483,7 +488,27 @@ export default function App() {
   return (
     <View style={styles.screen}>
       <StatusBar style="light" />
-      <ScrollView contentContainerStyle={styles.content}>
+
+      <View style={styles.tabs}>
+        {(['route', 'outbox'] as const).map((name) => (
+          <Pressable
+            key={name}
+            onPress={() => setTab(name)}
+            style={[styles.tab, tab === name && styles.tabOn]}
+          >
+            <Text style={[styles.tabText, tab === name && styles.tabTextOn]}>
+              {name === 'route' ? 'Route' : 'Outbox'}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+
+      {tab === 'route' ? <RouteScreen /> : null}
+
+      <ScrollView
+        contentContainerStyle={styles.content}
+        style={tab === 'outbox' ? undefined : styles.hidden}
+      >
         <Text style={styles.title}>Outbox</Text>
         <Text style={styles.dim}>{deviceId}</Text>
 
@@ -740,6 +765,12 @@ const styles = StyleSheet.create({
   centre: { alignItems: 'center', justifyContent: 'center', gap: 8 },
   content: { padding: 20, paddingTop: 60, gap: 12 },
   title: { color: '#e6edf3', fontSize: 28, ...bold },
+  hidden: { display: 'none' },
+  tabs: { flexDirection: 'row', gap: 8, paddingHorizontal: 16, paddingTop: 8 },
+  tab: { paddingVertical: 8, paddingHorizontal: 18, borderRadius: 8, backgroundColor: '#161b22' },
+  tabOn: { backgroundColor: '#1f6feb' },
+  tabText: { color: '#8b949e', fontSize: 14, ...bold },
+  tabTextOn: { color: '#ffffff' },
   dim: { color: '#8b949e', fontSize: 13 },
   mono: { color: '#8b949e', fontSize: 12, fontFamily: 'monospace' },
   good: { color: '#3fb950', fontSize: 13, ...bold },
