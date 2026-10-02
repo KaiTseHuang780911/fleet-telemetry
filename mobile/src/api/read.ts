@@ -70,6 +70,16 @@ export interface Trip {
   distance_m: number;
 }
 
+/** One calendar day on which the vehicle reported, from the server. */
+export interface ActiveDay {
+  /** Midnight UTC of that day. */
+  day: string;
+  fixes: number;
+  /** First and last fix within the day, as exact instants. */
+  first: string;
+  last: string;
+}
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -203,4 +213,20 @@ export function listTrips(
     `/v1/vehicles/${encodeURIComponent(vehicleId)}/trips${windowQuery(window)}`,
     opts,
   );
+}
+
+/**
+ * Days this vehicle has data for, newest first.
+ *
+ * Backs the day picker. Offering only days that hold something is the
+ * difference between answering "when did this vehicle move?" and making the
+ * reader guess — and the server already knows.
+ */
+export function listActiveDays(
+  vehicleId: string,
+  limit?: number,
+  opts?: ReadOptions,
+): Promise<ActiveDay[]> {
+  const q = limit != null ? `?limit=${encodeURIComponent(String(limit))}` : '';
+  return getJson<ActiveDay[]>(`/v1/vehicles/${encodeURIComponent(vehicleId)}/days${q}`, opts);
 }

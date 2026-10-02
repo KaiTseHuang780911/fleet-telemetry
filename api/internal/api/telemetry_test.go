@@ -55,6 +55,10 @@ func (f *fakeStore) ListStopEvents(context.Context, uuid.UUID, time.Time, time.T
 	return []store.StopEvent{}, nil
 }
 
+func (f *fakeStore) ListActiveDays(context.Context, uuid.UUID, int) ([]store.ActiveDay, error) {
+	return nil, nil
+}
+
 func (f *fakeStore) ListPositions(
 	context.Context, uuid.UUID, time.Time, time.Time, int,
 ) (store.PositionPage, error) {

@@ -209,6 +209,61 @@ func (s *Store) ListPositions(
 	return page, nil
 }
 
+// ActiveDay is one calendar day on which a vehicle reported.
+type ActiveDay struct {
+	// Day is midnight UTC of that day, so a client can build a window from it
+	// without parsing a date string.
+	Day   time.Time `json:"day"`
+	Fixes int       `json:"fixes"`
+	First time.Time `json:"first"`
+	Last  time.Time `json:"last"`
+}
+
+// ListActiveDays reports the days a vehicle has data for, newest first.
+//
+// It exists so the UI can offer days that hold something rather than a blank
+// calendar. A date picker that lets you choose an empty Tuesday is a picker
+// that mostly produces disappointment, and the server already knows which days
+// are worth offering.
+//
+// Grouped in UTC rather than a local zone: the server has no idea what zone the
+// viewer is in, and inventing one here would silently shift every boundary.
+// The client gets exact instants and can present them however it likes.
+func (s *Store) ListActiveDays(ctx context.Context, vehicleID uuid.UUID, limit int) ([]ActiveDay, error) {
+	if limit <= 0 || limit > 365 {
+		limit = 365
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT date_trunc('day', recorded_at AT TIME ZONE 'UTC') AS day,
+		       count(*)        AS fixes,
+		       min(recorded_at) AS first,
+		       max(recorded_at) AS last
+		  FROM positions
+		 WHERE vehicle_id = $1
+		 GROUP BY 1
+		 ORDER BY 1 DESC
+		 LIMIT $2
+	`, vehicleID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query active days for %s: %w", vehicleID, err)
+	}
+	defer rows.Close()
+
+	days := make([]ActiveDay, 0, limit)
+	for rows.Next() {
+		var d ActiveDay
+		if err := rows.Scan(&d.Day, &d.Fixes, &d.First, &d.Last); err != nil {
+			return nil, fmt.Errorf("scan active day: %w", err)
+		}
+		days = append(days, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate active days: %w", err)
+	}
+	return days, nil
+}
+
 func (s *Store) CountPositions(ctx context.Context) (int64, error) {
 	var count int64
 	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM positions`).Scan(&count); err != nil {

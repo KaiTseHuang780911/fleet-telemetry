@@ -1,4 +1,4 @@
-import { ApiError, listPositions, listStops, listVehicles } from './read';
+import { ApiError, listActiveDays, listPositions, listStops, listVehicles } from './read';
 
 function jsonResponse(status: number, body: unknown) {
   return new Response(JSON.stringify(body), {
@@ -146,5 +146,41 @@ describe('failures', () => {
     const { impl } = spyFetch(jsonResponse(500, { error: 'boom' }));
 
     await expect(listVehicles({ ...base, fetchImpl: impl })).rejects.toBeInstanceOf(ApiError);
+  });
+});
+
+describe('reading active days', () => {
+  it('asks the vehicle’s days endpoint', async () => {
+    const { calls, impl } = spyFetch(jsonResponse(200, []));
+
+    await listActiveDays('veh-1', undefined, { ...base, fetchImpl: impl });
+
+    expect(calls[0]).toBe('http://api.test/v1/vehicles/veh-1/days');
+  });
+
+  it('passes a limit when given one', async () => {
+    const { calls, impl } = spyFetch(jsonResponse(200, []));
+
+    await listActiveDays('veh-1', 30, { ...base, fetchImpl: impl });
+
+    expect(calls[0]).toContain('limit=30');
+  });
+
+  it('returns the days the server reported', async () => {
+    const { impl } = spyFetch(
+      jsonResponse(200, [
+        {
+          day: '2026-09-18T00:00:00Z',
+          fixes: 494,
+          first: '2026-09-18T17:51:33Z',
+          last: '2026-09-18T23:59:51Z',
+        },
+      ]),
+    );
+
+    const days = await listActiveDays('veh-1', undefined, { ...base, fetchImpl: impl });
+
+    expect(days).toHaveLength(1);
+    expect(days[0]?.fixes).toBe(494);
   });
 });

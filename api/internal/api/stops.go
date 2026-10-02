@@ -86,6 +86,37 @@ func (s *Server) handleVehiclePositions(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, page)
 }
 
+// handleVehicleDays lists the days a vehicle has data for.
+//
+// Feeds the route screen's day picker. Offering only days that hold something
+// is the difference between a picker that answers "when did this vehicle move?"
+// and one that makes you guess.
+func (s *Server) handleVehicleDays(w http.ResponseWriter, r *http.Request) {
+	vehicleID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "vehicle id must be a UUID")
+		return
+	}
+
+	limit := 0
+	if v := r.URL.Query().Get("limit"); v != "" {
+		parsed, err := strconv.Atoi(v)
+		if err != nil || parsed <= 0 {
+			writeError(w, http.StatusBadRequest, "limit must be a positive integer")
+			return
+		}
+		limit = parsed
+	}
+
+	days, err := s.store.ListActiveDays(r.Context(), vehicleID, limit)
+	if err != nil {
+		s.logger.Error("list active days", "vehicle_id", vehicleID, "err", err)
+		writeError(w, http.StatusInternalServerError, "could not list active days")
+		return
+	}
+	writeJSON(w, http.StatusOK, days)
+}
+
 // handleReconciliation reports how far the device's own stop detection and the
 // server's derivation disagree over a window.
 //

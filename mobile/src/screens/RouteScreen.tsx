@@ -25,21 +25,48 @@ import {
 
 import {
   ApiError,
+  listActiveDays,
   listPositions,
   listStops,
   listVehicles,
+  type ActiveDay,
   type Position,
   type StopEvent,
 } from '../api/read';
 import { cameraFor, thin } from '../route/geometry';
 
-/** Windows the screen offers. Hours, because a shift is the unit that matters. */
-const WINDOWS = [
+/**
+ * What the screen is showing: the last N hours, or one specific day.
+ *
+ * Rolling windows answer "what is happening now" and a day answers "what
+ * happened on the 18th". Both are wanted, and neither subsumes the other — a
+ * 7-day window could not reach data from two weeks ago however far it stretched.
+ */
+type Selection = { kind: 'recent'; hours: number } | { kind: 'day'; day: ActiveDay };
+
+const RECENT = [
   { label: '1h', hours: 1 },
-  { label: '6h', hours: 6 },
   { label: '24h', hours: 24 },
-  { label: '7d', hours: 24 * 7 },
 ] as const;
+
+/** The window a selection covers. */
+function rangeOf(selection: Selection): { from: Date; to: Date } {
+  if (selection.kind === 'recent') {
+    const to = new Date();
+    return { from: new Date(to.getTime() - selection.hours * 3_600_000), to };
+  }
+  // Bounded by the day's own first and last fix rather than midnight to
+  // midnight. The server groups in UTC and the reader is not in UTC, so a
+  // local-midnight window would clip one end of the day it claims to show.
+  const from = new Date(selection.day.first);
+  const to = new Date(new Date(selection.day.last).getTime() + 1000);
+  return { from, to };
+}
+
+/** "Sep 18" — short, because these sit in a horizontal row. */
+function dayLabel(day: ActiveDay): string {
+  return new Date(day.first).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
 
 interface LoadedRoute {
   positions: Position[];
@@ -49,7 +76,8 @@ interface LoadedRoute {
 }
 
 export function RouteScreen() {
-  const [hours, setHours] = useState<number>(24);
+  const [selection, setSelection] = useState<Selection>({ kind: 'recent', hours: 24 });
+  const [days, setDays] = useState<ActiveDay[]>([]);
   const [route, setRoute] = useState<LoadedRoute | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -66,16 +94,18 @@ export function RouteScreen() {
           return;
         }
 
-        const from = new Date(Date.now() - hours * 3_600_000);
-        // Both reads in parallel: they are independent, and the screen cannot
-        // render usefully until it has both anyway.
-        const [page, stops] = await Promise.all([
-          listPositions(vehicle.id, { from }, { signal }),
+        const { from, to } = rangeOf(selection);
+        // Three reads in parallel: they are independent, and the screen cannot
+        // render usefully until it has them anyway.
+        const [page, stops, activeDays] = await Promise.all([
+          listPositions(vehicle.id, { from, to }, { signal }),
           // Client-detected stops only. Asking for both sources returns each
           // stop twice — once as detected on the device and once as derived by
           // the server — which would put two markers on every stop.
-          listStops(vehicle.id, { from, source: 'client' }, { signal }),
+          listStops(vehicle.id, { from, to, source: 'client' }, { signal }),
+          listActiveDays(vehicle.id, 30, { signal }),
         ]);
+        setDays(activeDays);
 
         setRoute({
           positions: page.positions,
@@ -91,7 +121,7 @@ export function RouteScreen() {
         setLoading(false);
       }
     },
-    [hours],
+    [selection],
   );
 
   useEffect(() => {
@@ -163,19 +193,39 @@ export function RouteScreen() {
         ) : null}
       </View>
 
-      <View style={styles.windows}>
-        {WINDOWS.map((w) => (
-          <Pressable
-            key={w.label}
-            onPress={() => setHours(w.hours)}
-            style={[styles.window, hours === w.hours && styles.windowOn]}
-          >
-            <Text style={[styles.windowText, hours === w.hours && styles.windowTextOn]}>
-              {w.label}
-            </Text>
-          </Pressable>
-        ))}
-      </View>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.windows}
+      >
+        {RECENT.map((w) => {
+          const on = selection.kind === 'recent' && selection.hours === w.hours;
+          return (
+            <Pressable
+              key={w.label}
+              onPress={() => setSelection({ kind: 'recent', hours: w.hours })}
+              style={[styles.window, on && styles.windowOn]}
+            >
+              <Text style={[styles.windowText, on && styles.windowTextOn]}>{w.label}</Text>
+            </Pressable>
+          );
+        })}
+
+        {/* Only days the vehicle actually reported on. A picker offering an
+            empty Tuesday is a picker that mostly produces disappointment. */}
+        {days.map((d) => {
+          const on = selection.kind === 'day' && selection.day.day === d.day;
+          return (
+            <Pressable
+              key={d.day}
+              onPress={() => setSelection({ kind: 'day', day: d })}
+              style={[styles.window, on && styles.windowOn]}
+            >
+              <Text style={[styles.windowText, on && styles.windowTextOn]}>{dayLabel(d)}</Text>
+            </Pressable>
+          );
+        })}
+      </ScrollView>
 
       <ScrollView
         style={styles.panel}
@@ -279,7 +329,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: '#0d111788',
   },
-  windows: { flexDirection: 'row', gap: 8, padding: 12 },
+  windows: { flexDirection: 'row', gap: 8, paddingHorizontal: 12, paddingVertical: 12 },
   window: {
     paddingVertical: 6,
     paddingHorizontal: 14,
