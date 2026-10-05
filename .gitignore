@@ -63,3 +63,9 @@ $RECYCLE.BIN/
 
 # --- macOS (for anyone else cloning this) ---
 .DS_Store
+
+# Release signing material. The keystore itself is already covered by
+# *.keystore above; this covers the password beside it. Losing either means
+# never being able to update a published app again, so it lives outside
+# mobile/android/ — `expo prebuild --clean` deletes that directory wholesale.
+mobile/credentials/
