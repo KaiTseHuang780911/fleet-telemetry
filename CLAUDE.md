@@ -105,17 +105,18 @@ Worth knowing before suggesting commands — this machine is not a typical Unix 
 ## Current phase
 
 <!-- Update this each session. -->
-**Phase 2. Slices 1 and 2 are done and device-proven; slice 2c is next.** Phase 1 is
-complete (schema, ingestion with shed-load backpressure, derivation, reconciliation; CI
-green on Linux with the race detector and a real SIGTERM test).
+**Phase 2. Slices 1, 2, 2c and 2e are done and device-proven. 2d is next, then 2f.**
+Phase 1 is complete (schema, ingestion with shed-load backpressure, derivation,
+reconciliation; CI green on Linux with the race detector and a real SIGTERM test).
 
 The mobile app is at `/mobile`: Expo SDK 57, RN 0.86, TypeScript strict plus
-`noUncheckedIndexedAccess`. **119 unit tests.** Slice 1 is the durable offline outbox and a
-debug screen; slice 2 is background location through a foreground service.
+`noUncheckedIndexedAccess`. **183 unit tests across 12 files.** Slice 1 is the durable
+offline outbox, 2 is background location through a foreground service, 2c is on-device
+arrival detection, 2e is the route map.
 
-ADRs 001-004 cover the server; **005** covers the mobile outbox and its delivery
-guarantees; **006** covers the Android/Expo accommodations, which are not optional reading
-before touching the mobile build.
+ADRs 001-004 cover the server; **005** the mobile outbox and its delivery guarantees;
+**006** the Android/Expo accommodations — not optional reading before touching the mobile
+build; **007** client-side arrival detection; **008** the battery measurements behind 2d.
 
 **Mobile toolchain notes (Windows):**
 - JDK 17 (Temurin) is installed and `JAVA_HOME` points at it. `_JAVA_OPTIONS` is
@@ -150,9 +151,30 @@ before touching the mobile build.
   mtime, and verify build-affecting changes in the *packaged* manifest or in bytecode
   (`javap -c`), not in the source file.
 
-**Next slices:** 2c arrival detection (the client half of ADR-002), 2d battery-aware
-sampling, 2e the route/stop UI, then EAS Build to a signed APK. Google Play submission is
-deferred — no developer account yet.
+**Next slices:** 2d battery-aware sampling, then 2f EAS Build to a signed APK. Google Play
+submission is deferred — no developer account yet.
+
+**Maps (slice 2e).** The route screen uses `expo-maps` (Google Maps, Android). The key is
+read from `GOOGLE_MAPS_API_KEY` in `mobile/.env` by `app.config.js` and never committed;
+`.env.example` documents obtaining and restricting it. Two gotchas cost an afternoon:
+- The key must be restricted to **both** certificate fingerprints, because debug and
+  release builds present different ones. Release currently signs with the *debug* keystore,
+  so the debug SHA-1 is the one in use:
+  `5E:8F:16:06:2E:A3:CD:2C:4A:0D:54:78:76:BA:A6:F3:8C:AB:F6:25`
+- **A rejected key logs nothing** on the Compose-based renderer. The map draws its frame,
+  attribution and zoom controls, and simply omits the tiles. Do not treat a silent logcat
+  as evidence the key is fine — verify the certificate in the APK with
+  `apksigner verify --print-certs` instead. Restriction changes also need a force-stop,
+  not just a reopen.
+
+**Release keystore.** Generated and sitting in `mobile/credentials/` (gitignored), with its
+password beside it. Deliberately **not** wired into `build.gradle`: changing the signing key
+changes the app identity, which makes `adb install -r` fail and forces an uninstall —
+taking the SQLite outbox, the queued readings and the device id with it. A fresh device id
+registers a *second* vehicle and orphans the existing history. Switch deliberately, with an
+empty queue. Release SHA-1 is
+`83:A5:31:20:83:32:F0:45:8D:41:74:D1:DE:58:C5:EB:E9:4E:EB:24`.
+**That folder is not backed up anywhere else — losing it means the app can never be updated.**
 
 **Verified on a real device (OnePlus 5, Android 10 / OxygenOS 10.0.1):**
 
@@ -170,16 +192,38 @@ deferred — no developer account yet.
   a defect. **Still untested: sustained tracking while moving, and a long offline stretch
   with real fixes.**
 
+- *Slice 2, sustained.* A 45-minute drive produced 101 real fixes (7.5-352 m accuracy, up to
+  19.6 m/s) through the background task and the offline queue, plus three on-device stops of
+  6m18s, 2m36s and 12m32s. Four days of tracking since: **3,200+ positions, 30 client stops**.
+- *Slice 2c, reconciled.* `stop_event_matches` holds rows at last. On real data the device's
+  detector and the server's independent derivation agree to **5.7 s and 8.0 m on average**
+  (worst 16 s / 24 m), with `derived_only = 0` — the server found no stop the device missed,
+  which is early evidence the 90 s dwell threshold is not too conservative.
+- *Slice 1 under real failure.* A batch carrying both reports of one stop made the API answer
+  500 for hours; the client kept everything and retried, producing **20,913 rejected
+  duplicates against 101 stored rows and zero loss**. The guarantee ADR-005 claims is the one
+  that held when everything around it did not.
+
 Getting slice 2 to that point took three separate platform defects, none of them code. See
 ADR-006 before assuming a green build means a working app.
+
+**The recurring failure mode, stated plainly.** Five times now the code has been correct and
+the *running artifact* has not: a patch edited into `node_modules` sources Expo never
+compiles; a mock run against an APK built before the feature existed; a server binary three
+days older than its own fix; an API process missing an endpoint added that morning; a map key
+registered against the wrong certificate. Green tests and a successful build say nothing
+about what is actually running. **Check the artifact** — APK mtime, packaged manifest,
+bytecode, process start time, signing certificate.
 
 **Known gaps, deliberately not hidden:**
 - Detection thresholds in the derivation pass are untuned guesses.
 - Derivation truncates trips straddling the window's start edge.
 - Device auto-registration is a development convenience, not authentication.
 - A crash between `202` and the server-side flush loses buffered readings. See ADR-003.
-- `stop_event_matches` has never held a row: the server half of ADR-002's hybrid was built
-  in Phase 1, the client half is slice 2c and does not exist yet.
+- A stop the vehicle arrives at and never leaves stays open forever, and nothing notices.
+  One such row has been open since 2026-09-20. Real, visible in production data, unhandled.
+- Detection thresholds (90 s dwell, 50 m radius) remain guesses, though now with
+  reconciliation data to tune against rather than nothing.
 - Quarantined rows accumulate in `outbox_dead` and nothing drains or reports them.
 - The outbox size cap (50,000) has never been reached, so the drop path is the
   least-exercised branch in the queue.
