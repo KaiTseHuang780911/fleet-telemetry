@@ -29,9 +29,16 @@ import {
   type StopEmission,
   type StopState,
 } from '../stops/detect';
+import {
+  INITIAL_SAMPLING_STATE,
+  decideSampling,
+  type SamplingState,
+} from './sampling';
 import { batteryPctFrom, motionFrom, normaliseHeading } from './mapping';
+import { applySamplingTier, LOCATION_TASK } from './options';
 
-export const LOCATION_TASK = 'fleet-telemetry-location';
+// Re-exported so callers keep importing it from the task module.
+export { LOCATION_TASK };
 
 /** Written by the task, read by the UI, so the debug screen can show progress. */
 export const LAST_FIX_SETTING = 'last_fix';
@@ -47,6 +54,8 @@ export const STOP_STATE_SETTING = 'stop_state';
  * "it was emitted and lost downstream" look identical from the outside.
  */
 export const STOP_DEBUG_SETTING = 'stop_debug';
+/** Sampling tier state, JSON. Persisted for the same reason the detector's is. */
+export const SAMPLING_SETTING = 'sampling_state';
 
 interface LocationTaskData {
   locations: LocationObject[];
@@ -157,6 +166,11 @@ export async function recordLocations(locations: LocationObject[]): Promise<void
       await store.setSetting(FIX_COUNT_SETTING, String(seen + locations.length));
     }
 
+    // Re-evaluate how often to sample, after the readings are safely queued.
+    // Same ordering as detection and for the same reason: a battery policy must
+    // never be able to cost a position.
+    await adjustSampling(store, locations, batteryPct);
+
     // One batch, not a loop until empty. The task's time budget is short and
     // unenforced from here; draining everything could be interrupted anywhere,
     // whereas one bounded attempt either completes or leaves the queue exactly
@@ -186,6 +200,78 @@ async function readBatteryPct(): Promise<number | undefined> {
   } catch (err) {
     console.warn('[battery] unavailable:', err instanceof Error ? err.message : String(err));
     return undefined;
+  }
+}
+
+
+/**
+ * Adjusts the sampling tier for the conditions, restarting location updates
+ * only when the tier actually changes.
+ *
+ * The decision is pure and lives in `sampling.ts`; this is the part that owns
+ * the state and the side effect. State is persisted beside the detector's
+ * because the process dies between deliveries, and a forgotten tier would mean
+ * the policy restarted from `active` every time Android reloaded the bundle —
+ * which is most of a shift.
+ *
+ * Swallows its own failures. Sampling at the wrong rate is a cost; failing to
+ * record is a loss.
+ */
+async function adjustSampling(
+  store: SqliteOutbox,
+  locations: LocationObject[],
+  batteryPct: number | undefined,
+): Promise<void> {
+  try {
+    const last = locations[locations.length - 1];
+    if (!last) return;
+
+    const previous = await readSamplingState(store);
+    const charging = await isCharging();
+
+    const decision = decideSampling(
+      previous,
+      {
+        motion: motionFrom(last.coords.speed),
+        batteryPct: batteryPct ?? null,
+        charging,
+      },
+      Date.now(),
+    );
+
+    // Written before the restart, not after. `startLocationUpdatesAsync`
+    // can take the process down with it on a bad day, and re-deciding from
+    // stale state would restart the subscription a second time.
+    await store.setSetting(SAMPLING_SETTING, JSON.stringify(decision.state));
+
+    if (decision.changedTo) {
+      await applySamplingTier(decision.changedTo);
+    }
+  } catch (err) {
+    console.error('[sampling] failed:', err instanceof Error ? err.message : String(err));
+  }
+}
+
+/** Whether the device is on a charger, false if that cannot be determined. */
+async function isCharging(): Promise<boolean> {
+  try {
+    const state = await Battery.getBatteryStateAsync();
+    return state === Battery.BatteryState.CHARGING || state === Battery.BatteryState.FULL;
+  } catch {
+    // Unknown means "do not conserve on a guess": returning true would pin the
+    // policy to `active` forever on a device whose battery API misbehaves.
+    return false;
+  }
+}
+
+/** Reads sampling state, treating anything unparseable as a fresh start. */
+async function readSamplingState(store: SqliteOutbox): Promise<SamplingState> {
+  const raw = await store.getSetting(SAMPLING_SETTING);
+  if (!raw) return INITIAL_SAMPLING_STATE;
+  try {
+    return JSON.parse(raw) as SamplingState;
+  } catch {
+    return INITIAL_SAMPLING_STATE;
   }
 }
 
