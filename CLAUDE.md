@@ -224,6 +224,18 @@ bytecode, process start time, signing certificate.
   One such row has been open since 2026-09-20. Real, visible in production data, unhandled.
 - Detection thresholds (90 s dwell, 50 m radius) remain guesses, though now with
   reconciliation data to tune against rather than nothing.
+- **Local history covers 7 days; anything older is server-only.** The route screen reads
+  `positions_local` first and the server second, so the last week works offline and
+  instantly. Older windows are fetched every time they are selected, held in React state
+  only, and are unavailable with no connectivity — server results are never written back to
+  the device. Deliberate as of 2026-10-17: caching them would make old days work offline and
+  stop the refetching, at the cost of a table that grows with everything ever viewed and
+  needs a different pruning rule than "7 days of capture". Revisit when the refetching or
+  the offline gap actually gets in the way.
+- The route screen picks `vehicles[0]` with no selector and no indication others exist. With
+  more than one vehicle it silently shows an arbitrary one and looks empty for the rest.
+  This already bit once, when a wiped device id registered a second vehicle and the screen
+  kept displaying the old one's empty window.
 - Quarantined rows accumulate in `outbox_dead` and nothing drains or reports them.
 - The outbox size cap (50,000) has never been reached, so the drop path is the
   least-exercised branch in the queue.
