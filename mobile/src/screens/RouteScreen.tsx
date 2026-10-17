@@ -10,6 +10,7 @@
  * show an emptying route — the better the sync works, the less you would see.
  */
 
+import NetInfo from '@react-native-community/netinfo';
 import { GoogleMaps } from 'expo-maps';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
@@ -34,6 +35,8 @@ import {
   type StopEvent,
 } from '../api/read';
 import { cameraFor, thin } from '../route/geometry';
+import { describeSource, mergePositions, type NetworkStatus } from '../route/merge';
+import { SqliteOutbox } from '../queue/sqlite';
 
 /**
  * What the screen is showing: the last N hours, or one specific day.
@@ -73,55 +76,121 @@ interface LoadedRoute {
   stops: StopEvent[];
   truncated: boolean;
   vehicleLabel: string;
+  /** One short line saying where the drawn data came from. */
+  sourceLine: string;
 }
 
-export function RouteScreen() {
+export interface RouteScreenProps {
+  /** Sends detail to the Outbox screen's log, where exceptions belong. */
+  onLog?: (line: string) => void;
+}
+
+export function RouteScreen({ onLog }: RouteScreenProps) {
   const [selection, setSelection] = useState<Selection>({ kind: 'recent', hours: 24 });
   const [days, setDays] = useState<ActiveDay[]>([]);
   const [route, setRoute] = useState<LoadedRoute | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [network, setNetwork] = useState<NetworkStatus>('online');
   const [loading, setLoading] = useState(true);
+
+  // Real connectivity, so an offline device stops asking a server it cannot
+  // reach. Retrying into a dead network costs radio and returns the same
+  // exception every time.
+  useEffect(
+    () =>
+      NetInfo.addEventListener((state) =>
+        setNetwork(state.isConnected ? 'online' : 'offline'),
+      ),
+    [],
+  );
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
       setError(null);
+      const { from, to } = rangeOf(selection);
+
+      // Local history first, always. The device just recorded these; asking a
+      // server for them is a round trip to be told what we already know, and
+      // out of coverage it is a round trip that cannot succeed. The map draws
+      // from this whether or not anything else works.
+      let local: Position[] = [];
       try {
-        const vehicles = await listVehicles({ signal });
-        const vehicle = vehicles[0];
-        if (!vehicle) {
-          setRoute(null);
-          setError('No vehicle has reported yet. Start tracking and drain the queue.');
-          return;
+        const store = await SqliteOutbox.open(undefined, { isolated: true });
+        try {
+          const rows = await store.localSince(from.toISOString());
+          local = rows
+            .filter((r) => new Date(r.recordedAt) <= to)
+            .map((r) => ({
+              reading_id: r.readingId,
+              vehicle_id: '',
+              recorded_at: r.recordedAt,
+              received_at: r.recordedAt,
+              lat: r.lat,
+              lon: r.lon,
+              speed_mps: r.speedMps,
+              accuracy_m: r.accuracyM,
+              battery_pct: r.batteryPct,
+              motion_state: r.motionState,
+            }));
+        } finally {
+          await store.close();
         }
-
-        const { from, to } = rangeOf(selection);
-        // Three reads in parallel: they are independent, and the screen cannot
-        // render usefully until it has them anyway.
-        const [page, stops, activeDays] = await Promise.all([
-          listPositions(vehicle.id, { from, to }, { signal }),
-          // Client-detected stops only. Asking for both sources returns each
-          // stop twice — once as detected on the device and once as derived by
-          // the server — which would put two markers on every stop.
-          listStops(vehicle.id, { from, to, source: 'client' }, { signal }),
-          listActiveDays(vehicle.id, 30, { signal }),
-        ]);
-        setDays(activeDays);
-
-        setRoute({
-          positions: page.positions,
-          stops,
-          truncated: page.truncated,
-          vehicleLabel: vehicle.label ?? vehicle.external_id,
-        });
       } catch (err) {
-        if (err instanceof Error && err.name === 'AbortError') return;
-        setError(err instanceof ApiError ? err.message : String(err));
-        setRoute(null);
-      } finally {
-        setLoading(false);
+        onLog?.(`route: local history unreadable — ${describe(err)}`);
       }
+
+      let server: Position[] = [];
+      let stops: StopEvent[] = [];
+      let truncated = false;
+      let vehicleLabel = 'this device';
+      let serverFailed = false;
+
+      // Skipped entirely while offline. There is no point discovering the same
+      // ConnectException once per window change.
+      if (network === 'online') {
+        try {
+          const vehicles = await listVehicles({ signal });
+          const vehicle = vehicles[0];
+          if (vehicle) {
+            vehicleLabel = vehicle.label ?? vehicle.external_id;
+            const [page, serverStops, activeDays] = await Promise.all([
+              listPositions(vehicle.id, { from, to }, { signal }),
+              // Client-detected stops only. Both sources would put two markers
+              // on every stop — the footgun ADR-002 predicted.
+              listStops(vehicle.id, { from, to, source: 'client' }, { signal }),
+              listActiveDays(vehicle.id, 30, { signal }),
+            ]);
+            server = page.positions;
+            stops = serverStops;
+            truncated = page.truncated;
+            setDays(activeDays);
+          }
+        } catch (err) {
+          if (err instanceof Error && err.name === 'AbortError') return;
+          serverFailed = true;
+          // The exception goes to the log, not at the driver. "fetch failed:
+          // java.net.ConnectException" is unactionable on a screen and hides
+          // the fact that the map is showing real data anyway.
+          onLog?.(`route: server read failed — ${describe(err)}`);
+        }
+      }
+
+      const merged = mergePositions(local, server);
+
+      if (merged.positions.length === 0 && local.length === 0 && serverFailed) {
+        setError('No route data on this device for this window.');
+      }
+
+      setRoute({
+        positions: merged.positions,
+        stops,
+        truncated,
+        vehicleLabel,
+        sourceLine: describeSource(network, merged, serverFailed),
+      });
+      setLoading(false);
     },
-    [selection],
+    [selection, network, onLog],
   );
 
   useEffect(() => {
@@ -233,6 +302,21 @@ export function RouteScreen() {
           <RefreshControl refreshing={loading} onRefresh={() => void load()} tintColor="#8b949e" />
         }
       >
+        {/* Two lines, always present, instead of an exception dump. One says
+            whether the device can reach anything; the other says where the
+            drawn data came from. Detail goes to the Outbox log. */}
+        <View style={styles.line}>
+          <Text style={styles.dim}>network</Text>
+          <Text style={network === 'online' ? styles.good : styles.warnInline}>
+            {network === 'online' ? 'online' : 'offline'}
+          </Text>
+        </View>
+
+        <View style={styles.line}>
+          <Text style={styles.dim}>data</Text>
+          <Text style={styles.mono}>{route?.sourceLine ?? '—'}</Text>
+        </View>
+
         {error ? <Text style={styles.error}>{error}</Text> : null}
 
         {route ? (
@@ -286,6 +370,10 @@ export function RouteScreen() {
       </ScrollView>
     </View>
   );
+}
+
+function describe(err: unknown): string {
+  return err instanceof ApiError || err instanceof Error ? err.message : String(err);
 }
 
 function toPoints(items: { lat: number; lon: number }[]) {
@@ -357,5 +445,7 @@ const styles = StyleSheet.create({
   dim: { color: '#8b949e', fontSize: 13 },
   mono: { color: '#e6edf3', fontSize: 13, fontFamily: mono },
   warn: { color: '#d29922', fontSize: 13, lineHeight: 18, marginTop: 8 },
+  warnInline: { color: '#d29922', fontSize: 13, ...bold },
+  good: { color: '#3fb950', fontSize: 13, ...bold },
   error: { color: '#f85149', fontSize: 13, lineHeight: 18, marginVertical: 8 },
 });

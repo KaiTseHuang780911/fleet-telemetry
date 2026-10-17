@@ -10,6 +10,19 @@ import * as SQLite from 'expo-sqlite';
 
 import type { OutboxItem, OutboxStore } from './types';
 
+/** One fix as held in local history. Mirrors what the map needs, nothing more. */
+export interface LocalFix {
+  readingId: string;
+  /** ISO 8601, device clock at capture. */
+  recordedAt: string;
+  lat: number;
+  lon: number;
+  speedMps?: number;
+  accuracyM?: number;
+  batteryPct?: number;
+  motionState?: string;
+}
+
 const DB_NAME = 'fleet-outbox.db';
 
 /**
@@ -19,7 +32,7 @@ const DB_NAME = 'fleet-outbox.db';
  * table and the app is the only writer. If this grows past a handful of steps,
  * that is the moment to reach for something with rollback support.
  */
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 interface OutboxRow {
   id: string;
@@ -139,6 +152,36 @@ export class SqliteOutbox implements OutboxStore {
             created_at    TEXT NOT NULL,
             quarantined_at TEXT NOT NULL
           );
+        `);
+      }
+      if (current < 2) {
+        // Local history, separate from the queue.
+        //
+        // The outbox is a queue: a row is deleted the moment the server
+        // confirms it, which is exactly right for delivery and useless for
+        // drawing a map. Reading the route from the outbox would show it
+        // emptying as sync succeeded — the better the upload worked, the less
+        // there would be to see.
+        //
+        // So fixes are written twice: once to the queue for delivery, once
+        // here to be looked at. Duplicated on purpose; the two have different
+        // lifetimes and conflating them is what made the map need a network
+        // round trip to show data the device had just captured itself.
+        await txn.execAsync(`
+          CREATE TABLE IF NOT EXISTS positions_local (
+            reading_id   TEXT PRIMARY KEY NOT NULL,
+            recorded_at  TEXT NOT NULL,
+            lat          REAL NOT NULL,
+            lon          REAL NOT NULL,
+            speed_mps    REAL,
+            accuracy_m   REAL,
+            battery_pct  INTEGER,
+            motion_state TEXT
+          );
+
+          -- Every read is "the last N hours, oldest first".
+          CREATE INDEX IF NOT EXISTS positions_local_time_idx
+            ON positions_local (recorded_at);
         `);
       }
       await txn.execAsync(`PRAGMA user_version = ${SCHEMA_VERSION}`);
@@ -285,6 +328,86 @@ export class SqliteOutbox implements OutboxStore {
   /** Test and debug support. */
   async clear(): Promise<void> {
     await this.db.execAsync('DELETE FROM outbox; DELETE FROM outbox_dead;');
+  }
+
+  /**
+   * Records fixes to local history, for the map to read without a network.
+   *
+   * INSERT OR IGNORE on the same client id the server deduplicates on, so a
+   * re-record is a no-op for the same reason a resend is.
+   */
+  async recordLocal(fixes: LocalFix[]): Promise<void> {
+    if (fixes.length === 0) return;
+    this.assertOpen();
+
+    await this.db.withExclusiveTransactionAsync(async (txn) => {
+      for (const f of fixes) {
+        await txn.runAsync(
+          `INSERT OR IGNORE INTO positions_local
+             (reading_id, recorded_at, lat, lon, speed_mps, accuracy_m, battery_pct, motion_state)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            f.readingId,
+            f.recordedAt,
+            f.lat,
+            f.lon,
+            f.speedMps ?? null,
+            f.accuracyM ?? null,
+            f.batteryPct ?? null,
+            f.motionState ?? null,
+          ],
+        );
+      }
+    });
+  }
+
+  /** Local history within a window, oldest first. */
+  async localSince(fromIso: string, limit = 5000): Promise<LocalFix[]> {
+    this.assertOpen();
+    const rows = await this.db.getAllAsync<{
+      reading_id: string;
+      recorded_at: string;
+      lat: number;
+      lon: number;
+      speed_mps: number | null;
+      accuracy_m: number | null;
+      battery_pct: number | null;
+      motion_state: string | null;
+    }>(
+      `SELECT reading_id, recorded_at, lat, lon, speed_mps, accuracy_m, battery_pct, motion_state
+         FROM positions_local
+        WHERE recorded_at >= ?
+        ORDER BY recorded_at
+        LIMIT ?`,
+      [fromIso, limit],
+    );
+
+    return rows.map((r) => ({
+      readingId: r.reading_id,
+      recordedAt: r.recorded_at,
+      lat: r.lat,
+      lon: r.lon,
+      speedMps: r.speed_mps ?? undefined,
+      accuracyM: r.accuracy_m ?? undefined,
+      batteryPct: r.battery_pct ?? undefined,
+      motionState: r.motion_state ?? undefined,
+    }));
+  }
+
+  /**
+   * Drops local history older than the cutoff, and reports how many went.
+   *
+   * Unbounded local history would grow for the life of the install — roughly
+   * 8,600 rows a day at the active tier. This is a cache for the map, not a
+   * second source of truth; the server holds the archive.
+   */
+  async pruneLocal(beforeIso: string): Promise<number> {
+    this.assertOpen();
+    const result = await this.db.runAsync(
+      `DELETE FROM positions_local WHERE recorded_at < ?`,
+      [beforeIso],
+    );
+    return result.changes ?? 0;
   }
 
   async close(): Promise<void> {

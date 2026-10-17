@@ -20,7 +20,7 @@ import { HttpTransport } from '../api/transport';
 import { API_BASE_URL, DEVICE_ID_SETTING } from '../config';
 import { SqliteOutbox } from '../queue/sqlite';
 import { SyncEngine } from '../queue/sync';
-import { DEFAULT_SYNC_CONFIG } from '../queue/types';
+import { DEFAULT_SYNC_CONFIG, type OutboxItem } from '../queue/types';
 import { makePositionItem, makeStopItem, newClientId } from '../telemetry/readings';
 import {
   INITIAL_STOP_STATE,
@@ -56,6 +56,14 @@ export const STOP_STATE_SETTING = 'stop_state';
 export const STOP_DEBUG_SETTING = 'stop_debug';
 /** Sampling tier state, JSON. Persisted for the same reason the detector's is. */
 export const SAMPLING_SETTING = 'sampling_state';
+
+/**
+ * How much local history to keep, in days.
+ *
+ * Long enough to cover the route screen's widest useful window, short enough
+ * that an install does not accumulate a year of fixes nobody will look at.
+ */
+export const LOCAL_HISTORY_DAYS = 7;
 
 interface LocationTaskData {
   locations: LocationObject[];
@@ -146,6 +154,11 @@ export async function recordLocations(locations: LocationObject[]): Promise<void
 
     await engine.enqueue(items);
 
+    // Written to local history as well as the queue. The queue deletes a row
+    // the moment the server confirms it, so it cannot also be the thing the
+    // map reads — see the positions_local comment in sqlite.ts.
+    await recordLocalHistory(store, items);
+
     // Arrival detection runs on the same fixes, after they are safely queued.
     // Ordered that way on purpose: a bug in detection must not be able to cost
     // a position reading, which is the record everything else is derived from.
@@ -203,6 +216,56 @@ async function readBatteryPct(): Promise<number | undefined> {
   }
 }
 
+
+
+/**
+ * Mirrors fixes into local history so the map works without a network.
+ *
+ * Failures are swallowed for the usual reason: this is a cache for drawing,
+ * and losing it costs a picture. Losing the queued reading costs the record.
+ */
+async function recordLocalHistory(store: SqliteOutbox, items: OutboxItem[]): Promise<void> {
+  try {
+    // Derived from the queued items rather than re-read from the raw fixes, so
+    // local history carries exactly the client ids the queue and the server
+    // deduplicate on. Mapping the fixes a second time would produce a parallel
+    // implementation that could drift from the one on the wire.
+    const fixes = items
+      .filter((item) => item.kind === 'position')
+      .map((item) => {
+        const p = item.payload as {
+          reading_id: string;
+          recorded_at: string;
+          lat: number;
+          lon: number;
+          speed_mps?: number;
+          accuracy_m?: number;
+          battery_pct?: number;
+          motion_state?: string;
+        };
+        return {
+          readingId: p.reading_id,
+          recordedAt: p.recorded_at,
+          lat: p.lat,
+          lon: p.lon,
+          speedMps: p.speed_mps,
+          accuracyM: p.accuracy_m,
+          batteryPct: p.battery_pct,
+          motionState: p.motion_state,
+        };
+      });
+
+    await store.recordLocal(fixes);
+
+    // Bounded, because this grows for the life of the install otherwise --
+    // roughly 8,600 rows a day at the active tier. The server holds the
+    // archive; this only has to cover what the map can show.
+    const cutoff = new Date(Date.now() - LOCAL_HISTORY_DAYS * 86_400_000).toISOString();
+    await store.pruneLocal(cutoff);
+  } catch (err) {
+    console.warn('[local history]', err instanceof Error ? err.message : String(err));
+  }
+}
 
 /**
  * Adjusts the sampling tier for the conditions, restarting location updates

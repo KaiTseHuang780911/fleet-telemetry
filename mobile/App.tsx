@@ -503,7 +503,7 @@ export default function App() {
         ))}
       </View>
 
-      {tab === 'route' ? <RouteScreen /> : null}
+      {tab === 'route' ? <RouteScreen onLog={note} /> : null}
 
       <ScrollView
         contentContainerStyle={styles.content}
