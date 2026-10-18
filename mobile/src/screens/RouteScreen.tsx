@@ -12,7 +12,7 @@
 
 import NetInfo from '@react-native-community/netinfo';
 import { GoogleMaps } from 'expo-maps';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Platform,
@@ -92,6 +92,10 @@ export function RouteScreen({ onLog }: RouteScreenProps) {
   const [error, setError] = useState<string | null>(null);
   const [network, setNetwork] = useState<NetworkStatus>('online');
   const [loading, setLoading] = useState(true);
+
+  // Held so the camera can be moved without remounting the map. See the effect
+  // below for why that matters.
+  const mapRef = useRef<GoogleMaps.MapView>(null);
 
   // Real connectivity, so an offline device stops asking a server it cannot
   // reach. Retrying into a dead network costs radio and returns the same
@@ -211,6 +215,17 @@ export function RouteScreen({ onLog }: RouteScreenProps) {
     [path, route?.stops],
   );
 
+  // Move the camera when the framing changes, rather than rebuilding the view.
+  // Animated rather than snapped, so switching between days reads as the map
+  // travelling there instead of flickering to a new place.
+  useEffect(() => {
+    mapRef.current?.setCameraPosition({
+      coordinates: { latitude: camera.latitude, longitude: camera.longitude },
+      zoom: camera.zoom,
+      duration: 500,
+    });
+  }, [camera.latitude, camera.longitude, camera.zoom]);
+
   const markers = useMemo(
     () =>
       (route?.stops ?? []).map((stop) => ({
@@ -241,11 +256,14 @@ export function RouteScreen({ onLog }: RouteScreenProps) {
   return (
     <View style={styles.screen}>
       <View style={styles.mapWrap}>
-        {/* The map is keyed on the camera so a window change re-frames it.
-            expo-maps treats cameraPosition as an initial value, not a
-            controlled prop, so without this the view stays where it was. */}
+        {/* Deliberately NOT keyed on the camera.
+            `cameraPosition` is an initial value rather than a controlled prop,
+            so an earlier version keyed the element on the camera to force a
+            re-frame. That worked by remounting the entire native map on every
+            date change, and remounting a Google map view repeatedly leaves it
+            black. The camera is moved through the ref instead. */}
         <GoogleMaps.View
-          key={`${camera.latitude.toFixed(4)},${camera.longitude.toFixed(4)},${camera.zoom}`}
+          ref={mapRef}
           style={StyleSheet.absoluteFill}
           cameraPosition={{
             coordinates: { latitude: camera.latitude, longitude: camera.longitude },
@@ -306,15 +324,17 @@ export function RouteScreen({ onLog }: RouteScreenProps) {
             whether the device can reach anything; the other says where the
             drawn data came from. Detail goes to the Outbox log. */}
         <View style={styles.line}>
-          <Text style={styles.dim}>network</Text>
-          <Text style={network === 'online' ? styles.good : styles.warnInline}>
+          <Text style={[styles.dim, styles.lineLabel]}>network</Text>
+          <Text
+            style={[network === 'online' ? styles.good : styles.warnInline, styles.lineValue]}
+          >
             {network === 'online' ? 'online' : 'offline'}
           </Text>
         </View>
 
         <View style={styles.line}>
-          <Text style={styles.dim}>data</Text>
-          <Text style={styles.mono}>{route?.sourceLine ?? '—'}</Text>
+          <Text style={[styles.dim, styles.lineLabel]}>data</Text>
+          <Text style={[styles.mono, styles.lineValue]}>{route?.sourceLine ?? '—'}</Text>
         </View>
 
         {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -433,7 +453,13 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingVertical: 4,
+    // The label keeps its width and the value takes the rest, so a long value
+    // wraps within its own column instead of squeezing the label out of
+    // alignment. Belt to the braces of keeping the status strings short.
+    gap: 12,
   },
+  lineLabel: { flexShrink: 0 },
+  lineValue: { flex: 1, textAlign: 'right' },
   stopRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',

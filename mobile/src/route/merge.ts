@@ -96,9 +96,13 @@ export function describeSource(
   result: { source: PositionSource; localOnly: number },
   serverFailed: boolean,
 ): string {
-  if (network === 'offline') return 'offline — showing what this device recorded';
-  if (serverFailed) return 'server unreachable — showing what this device recorded';
-  if (result.source === 'local') return 'showing what this device recorded';
-  if (result.localOnly > 0) return `synced, plus ${result.localOnly} not yet uploaded`;
+  // Kept short enough to sit on one line beside its label. The first version
+  // read "offline — showing what this device recorded", which wrapped and
+  // shouldered the label out of alignment. A status line that makes the layout
+  // worse is not doing its job.
+  if (network === 'offline') return 'offline · local only';
+  if (serverFailed) return 'no server · local only';
+  if (result.source === 'local') return 'local only';
+  if (result.localOnly > 0) return `synced · ${result.localOnly} pending`;
   return 'synced';
 }

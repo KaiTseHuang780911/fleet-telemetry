@@ -67,6 +67,48 @@ present sampling rate. Sampling less should make that worse. The slice is only
 done when the trade is stated as a number: drain fell by X%, agreement degraded
 from 5.7 s to Y.
 
+## Measured outcome (2026-10-17)
+
+Eleven days of tracking with the tiers live, against the pre-slice baseline:
+
+| | Drain | From full |
+|---|---|---|
+| Before 2d, fixed rate | 5.56 %/h | 18.0 h |
+| After 2d, tiered | **3.06 %/h** | **32.7 h** |
+
+Controlled for usage mix by matching on fix rate, because more driving means
+both more fixes and more drain. The improvement survives:
+
+| Period | Fixes/h | Drain |
+|---|---|---|
+| Before, high rate | 146 | 8.26 %/h |
+| After, high rate | 168 | 4.26 %/h |
+| Before, low rate | 26 | 3.03 %/h |
+| After, low rate | 31 | 2.29 %/h |
+
+Drain roughly halved in both bands *at slightly higher fix rates*, so this is
+not the usage pattern.
+
+**The mechanism is not the one this ADR predicted.** Delivery rate barely
+moved — a stationary device averaged 52.3 s between fixes before and 52.1 s
+after — because `distanceInterval: 20` was already suppressing most stationary
+deliveries. The idle tier's 60 s interval is therefore close to a no-op against
+what the active tier already did while parked.
+
+So the saving almost certainly comes from `distanceInterval` widening 20 m to
+50 m, which changes how aggressively the fused provider duty-cycles GPS, rather
+than from delivering fewer fixes. Right outcome, wrong reason: the decision was
+argued from fix *count* and the lever turned out to be the displacement filter.
+That matters for tuning — raising `timeIntervalMs` further would likely buy
+little, while widening `distanceIntervalM` may buy more.
+
+**Confounds that remain:** one device, one person, 42 discharging hours after
+against 29 before, spread over eleven days rather than two. The direction is
+clear and the magnitude is not precise.
+
+**Not measured:** the fidelity cost. Reconciliation needs stops on both sides
+of the change to compare, and the drive pattern since has produced too few.
+
 ## Alternatives considered
 
 **Key on accuracy tier rather than frequency** — `High` to `Balanced`, letting

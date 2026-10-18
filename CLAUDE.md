@@ -105,7 +105,7 @@ Worth knowing before suggesting commands — this machine is not a typical Unix 
 ## Current phase
 
 <!-- Update this each session. -->
-**Phase 2. Slices 1, 2, 2c and 2e are done and device-proven. 2d is next, then 2f.**
+**Phase 2. Slices 1, 2, 2c, 2d and 2e are done and device-proven. Only 2f remains.**
 Phase 1 is complete (schema, ingestion with shed-load backpressure, derivation,
 reconciliation; CI green on Linux with the race detector and a real SIGTERM test).
 
@@ -151,7 +151,7 @@ build; **007** client-side arrival detection; **008** the battery measurements b
   mtime, and verify build-affecting changes in the *packaged* manifest or in bytecode
   (`javap -c`), not in the source file.
 
-**Next slices:** 2d battery-aware sampling, then 2f EAS Build to a signed APK. Google Play
+**Next slice:** 2f, EAS Build to a signed APK. Google Play
 submission is deferred — no developer account yet.
 
 **Maps (slice 2e).** The route screen uses `expo-maps` (Google Maps, Android). The key is
@@ -199,6 +199,11 @@ empty queue. Release SHA-1 is
   detector and the server's independent derivation agree to **5.7 s and 8.0 m on average**
   (worst 16 s / 24 m), with `derived_only = 0` — the server found no stop the device missed,
   which is early evidence the 90 s dwell threshold is not too conservative.
+- *Slice 2d, measured.* Eleven days with the sampling tiers live: drain fell from
+  **5.56 %/h to 3.06 %/h** — 18 hours from full to 32.7. Holds after matching on fix rate,
+  so it is not usage mix. The mechanism is not the one ADR-008 predicted: delivery rate
+  barely moved (52.3 s between stationary fixes before, 52.1 s after), so the saving comes
+  from the displacement filter widening rather than from fewer fixes.
 - *Slice 1 under real failure.* A batch carrying both reports of one stop made the API answer
   500 for hours; the client kept everything and retried, producing **20,913 rejected
   duplicates against 101 stored rows and zero loss**. The guarantee ADR-005 claims is the one

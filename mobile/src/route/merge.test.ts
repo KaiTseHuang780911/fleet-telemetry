@@ -79,12 +79,12 @@ describe('describeSource', () => {
   it('says the device is offline rather than naming an exception', () => {
     const line = describeSource('offline', synced, true);
 
-    expect(line).toBe('offline — showing what this device recorded');
+    expect(line).toBe('offline · local only');
     expect(line).not.toMatch(/Exception|192\.168|fetch/);
   });
 
   it('distinguishes an unreachable server from being offline', () => {
-    expect(describeSource('online', synced, true)).toMatch(/server unreachable/);
+    expect(describeSource('online', synced, true)).toMatch(/no server/);
   });
 
   it('says plainly when everything is synced', () => {
@@ -94,13 +94,27 @@ describe('describeSource', () => {
   // The useful case while driving: some of what is drawn has not uploaded yet.
   it('reports how much has not uploaded', () => {
     expect(describeSource('online', { source: 'both', localOnly: 12 }, false)).toBe(
-      'synced, plus 12 not yet uploaded',
+      'synced · 12 pending',
     );
   });
 
   it('never mentions a network error when nothing failed', () => {
     for (const network of ['online'] as const) {
-      expect(describeSource(network, synced, false)).not.toMatch(/unreachable|offline/);
+      expect(describeSource(network, synced, false)).not.toMatch(/no server|offline/);
     }
+  });
+
+  // The reason these are short: the line sits beside a label in a row, and a
+  // long value pushes the label out of alignment.
+  it('keeps every status short enough to sit on one line', () => {
+    const cases = [
+      describeSource('offline', synced, true),
+      describeSource('online', synced, true),
+      describeSource('online', { source: 'local', localOnly: 3 }, false),
+      describeSource('online', { source: 'both', localOnly: 999 }, false),
+      describeSource('online', synced, false),
+    ];
+
+    for (const line of cases) expect(line.length).toBeLessThanOrEqual(24);
   });
 });
