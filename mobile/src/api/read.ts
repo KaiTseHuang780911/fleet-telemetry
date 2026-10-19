@@ -25,6 +25,8 @@ export interface Vehicle {
   external_id: string;
   label: string | null;
   created_at: string;
+  /** Newest position for this vehicle, or null if it has never reported. */
+  last_reported_at: string | null;
 }
 
 export interface Position {

@@ -36,6 +36,7 @@ import {
 } from '../api/read';
 import { cameraFor, thin } from '../route/geometry';
 import { describeSource, mergePositions, type NetworkStatus } from '../route/merge';
+import { pickActiveVehicle } from '../route/vehicle';
 import { SqliteOutbox } from '../queue/sqlite';
 
 /**
@@ -76,6 +77,8 @@ interface LoadedRoute {
   stops: StopEvent[];
   truncated: boolean;
   vehicleLabel: string;
+  /** How many vehicles exist. The label is only worth showing when >1. */
+  vehicleCount: number;
   /** One short line saying where the drawn data came from. */
   sourceLine: string;
 }
@@ -147,6 +150,7 @@ export function RouteScreen({ onLog }: RouteScreenProps) {
       let stops: StopEvent[] = [];
       let truncated = false;
       let vehicleLabel = 'this device';
+      let vehicleCount = 0;
       let serverFailed = false;
 
       // Skipped entirely while offline. There is no point discovering the same
@@ -154,7 +158,13 @@ export function RouteScreen({ onLog }: RouteScreenProps) {
       if (network === 'online') {
         try {
           const vehicles = await listVehicles({ signal });
-          const vehicle = vehicles[0];
+          vehicleCount = vehicles.length;
+          // The server orders by last report, so row zero is the live vehicle.
+          // Picked explicitly anyway rather than trusting that ordering: this
+          // screen showed a stale vehicle for a week because it took whatever
+          // came first, and a server-side sort is not a contract this file can
+          // see.
+          const vehicle = pickActiveVehicle(vehicles);
           if (vehicle) {
             vehicleLabel = vehicle.label ?? vehicle.external_id;
             const [page, serverStops, activeDays] = await Promise.all([
@@ -190,6 +200,7 @@ export function RouteScreen({ onLog }: RouteScreenProps) {
         stops,
         truncated,
         vehicleLabel,
+        vehicleCount,
         sourceLine: describeSource(network, merged, serverFailed),
       });
       setLoading(false);
@@ -341,10 +352,17 @@ export function RouteScreen({ onLog }: RouteScreenProps) {
 
         {route ? (
           <>
-            <View style={styles.line}>
-              <Text style={styles.dim}>vehicle</Text>
-              <Text style={styles.mono}>{route.vehicleLabel}</Text>
-            </View>
+            {/* Only worth a line when there is a choice to be confused about.
+                With one vehicle it is noise; with several, which one is being
+                shown is the first thing to check when the map looks wrong. */}
+            {route.vehicleCount > 1 ? (
+              <View style={styles.line}>
+                <Text style={[styles.dim, styles.lineLabel]}>vehicle</Text>
+                <Text style={[styles.mono, styles.lineValue]}>
+                  {route.vehicleLabel} (1 of {route.vehicleCount})
+                </Text>
+              </View>
+            ) : null}
             <View style={styles.line}>
               <Text style={styles.dim}>positions</Text>
               <Text style={styles.mono}>
