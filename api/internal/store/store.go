@@ -89,14 +89,30 @@ type Vehicle struct {
 	ExternalID string    `json:"external_id"`
 	Label      string    `json:"label"`
 	CreatedAt  time.Time `json:"created_at"`
+
+	// LastReportedAt is the newest position this vehicle has, or nil if it has
+	// never reported.
+	//
+	// Exposed because "which vehicle should a screen show by default" is a
+	// question only this answers. A client picking the first row of a list
+	// ordered by creation picks the *oldest* vehicle, which is exactly wrong
+	// after a device re-registers: the stale vehicle wins and the live one is
+	// invisible. That happened.
+	LastReportedAt *time.Time `json:"last_reported_at"`
 }
 
-// ListVehicles returns every known vehicle, oldest first.
+// ListVehicles returns every known vehicle, most recently active first.
+//
+// Ordered by last report rather than creation so that the first row is the one
+// a single-vehicle client should display. Vehicles that have never reported
+// sort last — they are real rows but there is nothing to show for them.
 func (s *Store) ListVehicles(ctx context.Context) ([]Vehicle, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, external_id, label, created_at
-		  FROM vehicles
-		 ORDER BY created_at, external_id
+		SELECT v.id, v.external_id, v.label, v.created_at,
+		       (SELECT max(p.recorded_at) FROM positions p WHERE p.vehicle_id = v.id)
+		         AS last_reported_at
+		  FROM vehicles v
+		 ORDER BY last_reported_at DESC NULLS LAST, v.external_id
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("query vehicles: %w", err)
@@ -108,7 +124,7 @@ func (s *Store) ListVehicles(ctx context.Context) ([]Vehicle, error) {
 	out := make([]Vehicle, 0)
 	for rows.Next() {
 		var v Vehicle
-		if err := rows.Scan(&v.ID, &v.ExternalID, &v.Label, &v.CreatedAt); err != nil {
+		if err := rows.Scan(&v.ID, &v.ExternalID, &v.Label, &v.CreatedAt, &v.LastReportedAt); err != nil {
 			return nil, fmt.Errorf("scan vehicle: %w", err)
 		}
 		out = append(out, v)

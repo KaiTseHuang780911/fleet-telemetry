@@ -227,6 +227,29 @@ export function listActiveDays(
   limit?: number,
   opts?: ReadOptions,
 ): Promise<ActiveDay[]> {
-  const q = limit != null ? `?limit=${encodeURIComponent(String(limit))}` : '';
-  return getJson<ActiveDay[]>(`/v1/vehicles/${encodeURIComponent(vehicleId)}/days${q}`, opts);
+  const params = new URLSearchParams();
+  if (limit != null) params.set('limit', String(limit));
+  // The zone decides where a day begins, and only this side knows it. Without
+  // it the server groups in UTC while the picker labels each bucket with a
+  // local date, so in UTC-7 the button marked Oct 17 held Oct 17 evening plus
+  // all of Oct 18 — a whole day's driving under the wrong date.
+  params.set('tz', deviceTimeZone());
+  return getJson<ActiveDay[]>(
+    `/v1/vehicles/${encodeURIComponent(vehicleId)}/days?${params.toString()}`,
+    opts,
+  );
+}
+
+/**
+ * The device's IANA time zone, or UTC if the platform will not say.
+ *
+ * An IANA name rather than the current offset, so the server's day boundary
+ * follows daylight saving instead of drifting by an hour twice a year.
+ */
+export function deviceTimeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch {
+    return 'UTC';
+  }
 }

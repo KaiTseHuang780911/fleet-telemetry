@@ -155,7 +155,19 @@ describe('reading active days', () => {
 
     await listActiveDays('veh-1', undefined, { ...base, fetchImpl: impl });
 
-    expect(calls[0]).toBe('http://api.test/v1/vehicles/veh-1/days');
+    expect(calls[0]).toContain('/v1/vehicles/veh-1/days');
+  });
+
+  // Without this the server groups in UTC while the picker labels buckets with
+  // a local date, and in UTC-7 a whole day's driving lands under the wrong
+  // button. Found by a field test, not by a unit test.
+  it('tells the server which zone the day boundaries belong to', async () => {
+    const { calls, impl } = spyFetch(jsonResponse(200, []));
+
+    await listActiveDays('veh-1', undefined, { ...base, fetchImpl: impl });
+
+    expect(calls[0]).toContain('tz=');
+    expect(calls[0]).toMatch(/tz=[A-Za-z]+(%2F|\/)[A-Za-z_]+|tz=UTC/);
   });
 
   it('passes a limit when given one', async () => {

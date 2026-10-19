@@ -29,7 +29,7 @@ type Store interface {
 	ListTripsForVehicle(ctx context.Context, vehicleID uuid.UUID, from, to time.Time) ([]store.Trip, error)
 	ListStopEvents(ctx context.Context, vehicleID uuid.UUID, from, to time.Time, source string) ([]store.StopEvent, error)
 	ListPositions(ctx context.Context, vehicleID uuid.UUID, from, to time.Time, limit int) (store.PositionPage, error)
-	ListActiveDays(ctx context.Context, vehicleID uuid.UUID, limit int) ([]store.ActiveDay, error)
+	ListActiveDays(ctx context.Context, vehicleID uuid.UUID, tz string, limit int) ([]store.ActiveDay, error)
 	VehicleIDForDevice(ctx context.Context, externalID string) (uuid.UUID, error)
 	InsertClientStopEvents(ctx context.Context, events []store.StopEvent) (int, error)
 	SummariseReconciliation(ctx context.Context, from, to time.Time) (store.ReconciliationSummary, error)

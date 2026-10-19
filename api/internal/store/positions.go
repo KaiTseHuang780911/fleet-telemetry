@@ -226,16 +226,34 @@ type ActiveDay struct {
 // that mostly produces disappointment, and the server already knows which days
 // are worth offering.
 //
-// Grouped in UTC rather than a local zone: the server has no idea what zone the
-// viewer is in, and inventing one here would silently shift every boundary.
-// The client gets exact instants and can present them however it likes.
-func (s *Store) ListActiveDays(ctx context.Context, vehicleID uuid.UUID, limit int) ([]ActiveDay, error) {
+// **Grouped in the caller's zone, not UTC.** An earlier version grouped in UTC
+// on the reasoning that the server cannot know where the viewer is, and that
+// handing back exact instants let the client present them however it liked.
+// That was wrong in a way that took a field test to notice: the client labels
+// each bucket with a *local* date, so in UTC-7 a "day" ran 5pm to 5pm and the
+// button marked Oct 17 held Oct 17 evening plus all of Oct 18. A whole day's
+// driving appeared under the wrong date and the real one looked empty.
+//
+// The zone has to come from the caller, because only the caller knows it. An
+// IANA name rather than a fixed offset, so the boundary follows daylight saving
+// instead of drifting by an hour twice a year.
+func (s *Store) ListActiveDays(
+	ctx context.Context,
+	vehicleID uuid.UUID,
+	tz string,
+	limit int,
+) ([]ActiveDay, error) {
 	if limit <= 0 || limit > 365 {
 		limit = 365
 	}
+	if tz == "" {
+		tz = "UTC"
+	}
 
+	// AT TIME ZONE takes the zone as a parameter, so this is not interpolated;
+	// an unknown name makes Postgres raise rather than silently pick a default.
 	rows, err := s.pool.Query(ctx, `
-		SELECT date_trunc('day', recorded_at AT TIME ZONE 'UTC') AS day,
+		SELECT date_trunc('day', recorded_at AT TIME ZONE $2) AS day,
 		       count(*)        AS fixes,
 		       min(recorded_at) AS first,
 		       max(recorded_at) AS last
@@ -243,8 +261,8 @@ func (s *Store) ListActiveDays(ctx context.Context, vehicleID uuid.UUID, limit i
 		 WHERE vehicle_id = $1
 		 GROUP BY 1
 		 ORDER BY 1 DESC
-		 LIMIT $2
-	`, vehicleID, limit)
+		 LIMIT $3
+	`, vehicleID, tz, limit)
 	if err != nil {
 		return nil, fmt.Errorf("query active days for %s: %w", vehicleID, err)
 	}

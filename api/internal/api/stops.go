@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -108,8 +109,19 @@ func (s *Server) handleVehicleDays(w http.ResponseWriter, r *http.Request) {
 		limit = parsed
 	}
 
-	days, err := s.store.ListActiveDays(r.Context(), vehicleID, limit)
+	// The caller's zone decides where a day begins. Defaulting to UTC rather
+	// than guessing keeps a caller that says nothing predictable, but any UI
+	// labelling these with a local date must send one — see ListActiveDays.
+	tz := r.URL.Query().Get("tz")
+
+	days, err := s.store.ListActiveDays(r.Context(), vehicleID, tz, limit)
 	if err != nil {
+		// An unrecognised zone is the caller's mistake, not ours, and saying so
+		// beats a 500 that looks like the server is broken.
+		if strings.Contains(err.Error(), "time zone") {
+			writeError(w, http.StatusBadRequest, "tz must be an IANA time zone name")
+			return
+		}
 		s.logger.Error("list active days", "vehicle_id", vehicleID, "err", err)
 		writeError(w, http.StatusInternalServerError, "could not list active days")
 		return

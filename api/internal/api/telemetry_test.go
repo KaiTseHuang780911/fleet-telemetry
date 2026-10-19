@@ -55,7 +55,7 @@ func (f *fakeStore) ListStopEvents(context.Context, uuid.UUID, time.Time, time.T
 	return []store.StopEvent{}, nil
 }
 
-func (f *fakeStore) ListActiveDays(context.Context, uuid.UUID, int) ([]store.ActiveDay, error) {
+func (f *fakeStore) ListActiveDays(context.Context, uuid.UUID, string, int) ([]store.ActiveDay, error) {
 	return nil, nil
 }
 
