@@ -12,10 +12,7 @@
 import 'react-native-get-random-values';
 
 import NetInfo from '@react-native-community/netinfo';
-import { AppState } from 'react-native';
-import { StatusBar } from 'expo-status-bar';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
+import { AppState ,
   ActivityIndicator,
   Platform,
   Pressable,
@@ -25,6 +22,8 @@ import {
   Text,
   View,
 } from 'react-native';
+import { StatusBar } from 'expo-status-bar';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { v7 as uuidv7 } from 'uuid';
 
 import { HttpTransport } from './src/api/transport';
@@ -100,6 +99,8 @@ export default function App() {
   const [networkOnline, setNetworkOnline] = useState(true);
   const [busy, setBusy] = useState(false);
   const [pollError, setPollError] = useState<string | null>(null);
+  /** Clock sampled by the poll, so render stays pure. See backoffRemaining. */
+  const [polledAt, setPolledAt] = useState(() => Date.now());
   const [permission, setPermission] = useState<PermissionState | null>(null);
   const [tracking, setTracking] = useState(false);
   // The device's master location switch, polled alongside everything else.
@@ -132,7 +133,10 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
 
-    (async () => {
+    // `void` rather than ignored: the IIFE owns its own error handling below,
+    // and saying so explicitly is what distinguishes "deliberately not awaited"
+    // from "forgot to await" — a distinction this project has paid for.
+    void (async () => {
       try {
         const store = await SqliteOutbox.open();
 
@@ -199,6 +203,7 @@ export default function App() {
       }
       setTracking(await isTracking());
       setLocationOn(await servicesEnabled());
+      setPolledAt(Date.now());
       return true;
     } catch (err) {
       setPollError(err instanceof Error ? err.message : String(err));
@@ -335,6 +340,11 @@ export default function App() {
     if (!ready) return;
     // One immediately: the app may be opening after a long offline stretch with
     // a full queue, and nothing else would trigger a send until a fix arrived.
+    // runDrain awaits engine.status() before touching state for every trigger
+    // except 'manual', so nothing is set synchronously here. The rule cannot
+    // see across the call, so this is a false positive rather than a pattern
+    // worth restructuring around.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void runDrain('foreground');
     const timer = setInterval(() => void runDrain('periodic'), PERIODIC_DRAIN_MS);
     return () => clearInterval(timer);
@@ -482,8 +492,13 @@ export default function App() {
     );
   }
 
+  // Derived from a clock sampled by the poll rather than read during render.
+  // Date.now() in a render body makes the render impure: two renders of the
+  // same state produce different output, which is exactly what React may not
+  // assume. The poll already runs once a second, which is the resolution this
+  // is displayed at anyway.
   const backoffRemaining =
-    status?.nextAttemptAt != null ? Math.max(0, status.nextAttemptAt - Date.now()) : 0;
+    status?.nextAttemptAt != null ? Math.max(0, status.nextAttemptAt - polledAt) : 0;
 
   return (
     <View style={styles.screen}>

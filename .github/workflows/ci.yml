@@ -154,5 +154,12 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # Separate from typecheck because they catch different things. The
+      # compiler accepts an explicit `any` and a dropped promise; the lint is
+      # what enforces CLAUDE.md rule 1 and catches an un-awaited call in the
+      # background task, which is a failure that otherwise never surfaces.
+      - name: Lint
+        run: npm run lint
+
       - name: Test
         run: npm test -- --ci

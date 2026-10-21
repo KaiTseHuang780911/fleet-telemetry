@@ -45,7 +45,7 @@ function jsonResponse(status: number, body: unknown, headers: Record<string, str
 
 describe('HttpTransport', () => {
   it('posts readings and stop events in one request', async () => {
-    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const calls: { url: string; init: RequestInit }[] = [];
     const fetchImpl = (async (url: string, init: RequestInit) => {
       calls.push({ url, init });
       return jsonResponse(202, { accepted: 1, accepted_stops: 1 });
@@ -149,7 +149,7 @@ describe('HttpTransport', () => {
   });
 
   describe('503 backpressure', () => {
-    const cases: Array<{ name: string; header: string | null; expected: number }> = [
+    const cases: { name: string; header: string | null; expected: number }[] = [
       { name: 'seconds', header: '2', expected: 2000 },
       { name: 'zero', header: '0', expected: 0 },
       { name: 'missing', header: null, expected: 2000 },

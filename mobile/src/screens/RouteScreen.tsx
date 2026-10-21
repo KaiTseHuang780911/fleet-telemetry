@@ -113,6 +113,7 @@ export function RouteScreen({ onLog }: RouteScreenProps) {
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
+      setLoading(true);
       setError(null);
       const { from, to } = rangeOf(selection);
 
@@ -210,7 +211,11 @@ export function RouteScreen({ onLog }: RouteScreenProps) {
 
   useEffect(() => {
     const controller = new AbortController();
-    setLoading(true);
+    // Fetch-on-mount. load() sets a loading flag before its first await, which
+    // this rule counts as a synchronous setState in an effect. Deferring it
+    // past an await would leave the screen briefly showing stale data with no
+    // spinner, which is worse than one extra render.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void load(controller.signal);
     // Aborting on unmount stops a slow reply from setting state on a screen
     // that is gone, and cancels the request rather than leaving it in flight.

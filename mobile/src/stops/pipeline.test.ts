@@ -1,11 +1,11 @@
+import { makeStopItem } from '../telemetry/readings';
+import { INITIAL_STOP_STATE, detectStops, type Fix, type StopState } from './detect';
+
 jest.mock('react-native-get-random-values', () => ({}));
 jest.mock('uuid', () => {
   let seq = 0;
   return { v7: () => `row-${++seq}` };
 });
-
-import { makeStopItem } from '../telemetry/readings';
-import { INITIAL_STOP_STATE, detectStops, type Fix, type StopState } from './detect';
 
 /**
  * The client chain end to end: detector -> emission -> outbox item -> payload.
@@ -44,7 +44,7 @@ it('reports one stop as an open arrival then a completion under the same id', ()
   let { lat, lon } = ORIGIN;
   let at = 1_760_000_000_000;
 
-  const script: Array<'drive' | 'stop'> = [
+  const script: ('drive' | 'stop')[] = [
     ...Array(3).fill('drive'),
     ...Array(8).fill('stop'),
     // The mock does not move on the tick dwell expires: speed flips to cruise
@@ -54,7 +54,7 @@ it('reports one stop as an open arrival then a completion under the same id', ()
   ];
 
   let state: StopState = INITIAL_STOP_STATE;
-  const payloads: Array<Record<string, unknown>> = [];
+  const payloads: Record<string, unknown>[] = [];
   let n = 0;
 
   for (const step of script) {
@@ -89,7 +89,7 @@ it('reports one stop as an open arrival then a completion under the same id', ()
     }
   }
 
-  // eslint-disable-next-line no-console
+   
   console.log(JSON.stringify(payloads, null, 2));
 
   expect(payloads).toHaveLength(2);

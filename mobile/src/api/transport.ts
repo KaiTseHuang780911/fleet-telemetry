@@ -12,8 +12,8 @@ import type { OutboxItem, SendOutcome, Transport } from '../queue/types';
 interface IngestResponse {
   accepted: number;
   accepted_stops: number;
-  rejected?: Array<{ id: string; reason: string }>;
-  rejected_stops?: Array<{ id: string; reason: string }>;
+  rejected?: { id: string; reason: string }[];
+  rejected_stops?: { id: string; reason: string }[];
 }
 
 export interface HttpTransportOptions {

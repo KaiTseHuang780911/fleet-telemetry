@@ -78,7 +78,7 @@ export class InMemoryOutbox implements OutboxStore {
   }
 
   /** Test helper. Not part of OutboxStore. */
-  deadItems(): Array<{ item: OutboxItem; reason: string }> {
+  deadItems(): { item: OutboxItem; reason: string }[] {
     return [...this.dead.values()];
   }
 }

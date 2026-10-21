@@ -318,7 +318,7 @@ export class SqliteOutbox implements OutboxStore {
   }
 
   /** Quarantined items, newest first, for the debug screen. */
-  async deadItems(limit = 20): Promise<Array<{ id: string; reason: string; attempts: number }>> {
+  async deadItems(limit = 20): Promise<{ id: string; reason: string; attempts: number }[]> {
     return this.db.getAllAsync<{ id: string; reason: string; attempts: number }>(
       'SELECT id, reason, attempts FROM outbox_dead ORDER BY quarantined_at DESC LIMIT ?',
       [limit],
